@@ -1,0 +1,109 @@
+name: Copier Template Update
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  python-version: "3.11"
+
+jobs:
+  copier-update:
+    name: Copier Update
+    runs-on: ['ubuntu-latest']
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ env.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.python-version }}
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          virtualenvs-path: .venv
+
+      - name: Add poetry to path
+        run: echo "$(poetry env info --path)/bin" >> $GITHUB_PATH
+
+      - name: Set up cache
+        uses: actions/cache@v4
+        id: cached-poetry-dependencies
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ env.python-version }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: venv-${{ runner.os }}-${{ env.python-version }}-
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --all-extras
+
+      - name: Run copier update
+        id: run-update
+        run: poetry run copier update --trust -A --vcs-ref=HEAD
+
+      - name: Resolve conflicts with incoming changes
+        run: |
+          if [[ -n "$(git status --porcelain | grep '^UU')" ]]; then
+            git diff --name-only --diff-filter=U | while read file; do
+              awk '
+                BEGIN { inConflict=0 }
+                /^<<<<<<< /     { inConflict=1; next }
+                /^=======/      { if (inConflict) { inConflict=2; next } }
+                /^>>>>>>> /     { if (inConflict) { inConflict=0; next } }
+                { if (!inConflict) print; else if (inConflict==2) print }
+              ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+              git add "$file"
+            done
+            git diff --name-only --diff-filter=U | xargs git add
+          fi
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run poetry lock
+        run: poetry lock
+
+      - name: Extract commit from copier answers
+        id: copier-commit
+        run: |
+          COMMIT=$(grep '^_commit:' .copier-answers.yml | sed 's/_commit: //')
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+          echo "COPIER_COMMIT=$COMMIT" >> $GITHUB_ENV
+
+      - name: Run prek
+        uses: j178/prek-action@v1
+        continue-on-error: true
+        if: steps.check_changes.outputs.has_changes == 'true'
+
+      - name: Create or update PR
+        if: steps.check_changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: update files via copier"
+          branch: copier/update
+          title: "chore(deps): bump copier project template to ${{ steps.copier-commit.outputs.commit }}"
+          body: "This PR updates files via copier. In case of conflicts, the PR will always reflect the latest copier output."
+          delete-branch: true
+          labels: "dependencies"
+          token: ${{ secrets.PAT }}

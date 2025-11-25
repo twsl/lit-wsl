@@ -1,0 +1,137 @@
+---
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ['3.11']
+    runs-on: ['ubuntu-latest']
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+#          cache: 'poetry'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          virtualenvs-path: .venv
+
+      - name: Add poetry to path
+        run: echo "$(poetry env info --path)/bin" >> $GITHUB_PATH
+
+      - name: Set up cache
+        uses: actions/cache@v4
+        id: cached-poetry-dependencies
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: venv-${{ runner.os }}-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --all-extras
+
+      - name: Run prek
+        uses: j178/prek-action@v1
+        continue-on-error: true
+        env:
+          SKIP: poetry-lock
+
+      - name: Build dependencies
+        run: poetry build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ github.event.repository.name }}-${{ runner.os }}-${{ matrix.python-version }}-${{ github.sha }}
+          path: dist/
+        if: ${{ always() }}
+
+      - name: Run tests
+        run: |
+          poetry run pytest -c pyproject.toml \
+          --cov-config=pyproject.toml \
+          --cov-report=html \
+          --cov-report=xml:coverage-${{ runner.os }}-${{ matrix.python-version }}.xml \
+          --junitxml=junit/test-results-${{ runner.os }}-${{ matrix.python-version }}.xml \
+          --benchmark-disable
+
+      # MishaKav/pytest-coverage-comment
+
+      - name: Coverage summary report
+        uses: irongut/CodeCoverageSummary@v1.3.0
+        with:
+          filename: coverage-${{ runner.os }}-${{ matrix.python-version }}.xml
+          badge: true
+          format: "markdown"
+          output: "both"
+        if: ${{ always() }}
+
+      - name: Upload test coverage
+        uses: actions/upload-artifact@v5
+        with:
+          name: pytest-coverage-${{ runner.os }}-${{ matrix.python-version }}
+          path: code-coverage-results.md
+        if: ${{ always() }}
+
+      - name: Read code coverage file
+        id: coverage-file
+        uses: juliangruber/read-file-action@v1
+        with:
+          path: code-coverage-results.md
+        if: ${{ always() && github.event_name == 'pull_request' && github.event.workflow_run.conclusion != 'skipped' }}
+
+      - name: Add coverage PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: Code Coverage ${{ runner.os }} ${{ matrix.python-version }}
+          message: |
+            ## Code Coverage ${{ runner.os }} ${{ matrix.python-version }}
+            ${{ steps.coverage-file.outputs.content }}
+
+            Results for commit ${{ github.sha }}.
+        if: ${{ always() && github.event_name == 'pull_request' && github.event.workflow_run.conclusion != 'skipped' }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v5
+        with:
+          name: pytest-results-${{ runner.os }}-${{ matrix.python-version }}
+          path: junit/test-results-${{ runner.os }}-${{ matrix.python-version }}.xml
+        if: ${{ always() }}
+
+      - name: Publish Unit Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          check_name: Test Results ${{ runner.os }} ${{ matrix.python-version }}
+          report_individual_runs: true
+          files: junit/test-results-${{ runner.os }}-${{ matrix.python-version }}.xml
+        if: ${{ always() && github.event_name == 'pull_request' && github.event.workflow_run.conclusion != 'skipped' }}

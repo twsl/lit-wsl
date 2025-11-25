@@ -1,0 +1,33 @@
+---
+# Configuration: https://dependabot.com/docs/config-file/
+# Docs: https://docs.github.com/en/github/administering-a-repository/keeping-your-dependencies-updated-automatically
+
+version: 2
+
+updates:
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: devcontainers
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-type: all
+    open-pull-requests-limit: 50
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-type: production
+      - dependency-type: development
+    open-pull-requests-limit: 50
