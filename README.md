@@ -16,7 +16,9 @@ My personal library of reusable Pytorch Lightning components
 
 ## Features
 
-- `...`
+- [IntermediateLayerGetter](./src/lit_wsl/models/intermediate_layer_getter.py)
+- [WeightRenamer](./src/lit_wsl/models/weight_renamer.py)
+- [ModelTester](./src/lit_wsl/testing/lightning_tester.py)
 
 ## Installation
 
