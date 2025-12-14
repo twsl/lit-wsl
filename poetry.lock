@@ -1954,14 +1954,14 @@ min-versions = ["babel (==2.9.0)", "click (==7.0)", "colorama (==0.4) ; platform
 
 [[package]]
 name = "mkdocs-awesome-nav"
-version = "3.2.0"
+version = "3.3.0"
 description = "A plugin for customizing the navigation structure of your MkDocs site."
 optional = false
 python-versions = ">=3.10"
 groups = ["docs"]
 files = [
-    {file = "mkdocs_awesome_nav-3.2.0-py3-none-any.whl", hash = "sha256:1acf17aaa0f13a5506d3bdb39965bae3136df18a9a2e1106190ebaae2c14d1b6"},
-    {file = "mkdocs_awesome_nav-3.2.0.tar.gz", hash = "sha256:ec0eab7bbe94532d9b3f18ae9a54599b670069856b93df9f6ced1b4a62dfe510"},
+    {file = "mkdocs_awesome_nav-3.3.0-py3-none-any.whl", hash = "sha256:bf80f14bff9571df79129bbdf103b4198589ee7616f8a29720ae2e7ac2455930"},
+    {file = "mkdocs_awesome_nav-3.3.0.tar.gz", hash = "sha256:330edf4129995a7be8a9751edd8739d312fddf591c6cbd95ec80f12f4bfe8578"},
 ]
 
 [package.dependencies]
@@ -4933,4 +4933,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "19753e09ddcc204a45d984e377e133fb2526f2594cf1a4ebb9260e7644c1e563"
+content-hash = "68f605a2095722d7b93233bee468152492c4d873bfbb0b4f425142717ee15557"
