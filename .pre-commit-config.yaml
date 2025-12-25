@@ -58,7 +58,7 @@ repos:
       - id: nbstripout
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.7
+    rev: v0.14.10
     hooks:
       - id: ruff-check
         args: [--fix, -v]
@@ -79,6 +79,6 @@ repos:
       - id: vulture
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.29.1
+    rev: v8.30.0
     hooks:
       - id: gitleaks
