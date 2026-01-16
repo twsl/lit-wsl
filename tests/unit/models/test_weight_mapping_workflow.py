@@ -38,6 +38,18 @@ def test_complete_weight_mapping_workflow(
     assert len(mapping) > 0
     print(f"\nFound {len(mapping)} parameter mappings")
 
+    # 4a. Validate that parameter types match (weight->weight, bias->bias)
+    for source_name, target_name in mapping.items():
+        source_type = source_name.split(".")[-1]  # e.g., 'weight', 'bias'
+        target_type = target_name.split(".")[-1]
+        assert source_type == target_type, (
+            f"Parameter type mismatch: {source_name} ({source_type}) -> {target_name} ({target_type})"
+        )
+
+    # 4b. Validate 1-to-1 mapping (no duplicate targets)
+    targets = list(mapping.values())
+    assert len(targets) == len(set(targets)), "Mapping is not 1-to-1, found duplicate targets"
+
     # 5. Use WeightRenamer to apply mapping to checkpoint
     renamer = WeightRenamer(checkpoint_path)
     renamer.rename_keys(mapping)
@@ -68,6 +80,8 @@ def test_complete_weight_mapping_workflow(
     # Check if outputs are reasonably close (allowing for some difference due to unmapped buffers)
     diff = torch.abs(old_output - new_output).mean().item()
     print(f"Mean absolute difference between outputs: {diff:.6f}")
+    # With proper parameter matching, outputs should be very close (not 1e-1 tolerance)
+    assert torch.allclose(old_output, new_output, atol=1e-5)
 
     # The difference might be significant due to BatchNorm buffers,
     # but the outputs should at least be in a similar range
@@ -101,7 +115,13 @@ def test_weight_mapping_with_identical_architectures(tmp_path: Path, simple_mode
     # Note: state_dict has 18 entries (12 params + 6 buffers), but only 12 params are mapped
     print(f"\nMapped {len(mapping)} parameters")
     assert len(mapping) == 12  # All parameters should map
-
+    # Validate parameter type matching
+    for source_name, target_name in mapping.items():
+        source_type = source_name.split(".")[-1]
+        target_type = target_name.split(".")[-1]
+        assert source_type == target_type, (
+            f"Parameter type mismatch: {source_name} ({source_type}) -> {target_name} ({target_type})"
+        )
     # 5. Apply mapping
     renamer = WeightRenamer(checkpoint_path)
     renamer.rename_keys(mapping)
@@ -153,6 +173,14 @@ def test_partial_weight_mapping(tmp_path: Path, simple_model_class: nn.Module, r
     # Should find some compatible layers
     assert len(mapping) > 0
     print(f"\nPartial mapping: {len(mapping)} parameters mapped")
+
+    # Validate parameter type matching in partial mapping
+    for source_name, target_name in mapping.items():
+        source_type = source_name.split(".")[-1]
+        target_type = target_name.split(".")[-1]
+        assert source_type == target_type, (
+            f"Parameter type mismatch: {source_name} ({source_type}) -> {target_name} ({target_type})"
+        )
 
     # 5. Get unmatched parameters
     unmatched = mapper.get_unmatched()
@@ -233,3 +261,70 @@ def test_mapping_analysis_and_export(
     assert "coverage" in report
 
     print(f"Coverage: {report['coverage']:.1%}")
+
+
+def test_execution_order_impact_on_workflow(
+    tmp_path: Path, simple_model_class: nn.Module, renamed_model_class: nn.Module
+) -> None:
+    """Test that execution order tracking improves matching in real workflow."""
+    # 1. Create and save source model
+    source_model = simple_model_class()
+    checkpoint_path = tmp_path / "source.pth"
+    torch.save({"state_dict": source_model.state_dict()}, checkpoint_path)
+
+    # 2. Create target model
+    target_model = renamed_model_class()
+
+    # 3. Create dummy input
+    dummy_input = torch.randn(2, 3, 32, 32)
+
+    # 4. Compare mappings with and without execution order
+    mapper_no_order = WeightMapper.from_checkpoint(checkpoint_path, target_model)
+    mapper_with_order = WeightMapper.from_checkpoint(checkpoint_path, target_model, dummy_input=dummy_input)
+
+    mapping_no_order = mapper_no_order.suggest_mapping(threshold=0.5)
+    mapping_with_order = mapper_with_order.suggest_mapping(threshold=0.5)
+
+    # 5. Get scores for comparison
+    scores_no_order = {src: score for src, _, score in mapper_no_order.get_mapping_with_scores()}
+    scores_with_order = {src: score for src, _, score in mapper_with_order.get_mapping_with_scores()}
+
+    print(f"\n{'Execution Order Impact Analysis':-^80}")
+    print(f"Mappings found (no order): {len(mapping_no_order)}")
+    print(f"Mappings found (with order): {len(mapping_with_order)}")
+
+    # Calculate statistics
+    if scores_no_order and scores_with_order:
+        avg_no_order = sum(scores_no_order.values()) / len(scores_no_order)
+        avg_with_order = sum(scores_with_order.values()) / len(scores_with_order)
+
+        print(f"Average score (no order): {avg_no_order:.4f}")
+        print(f"Average score (with order): {avg_with_order:.4f}")
+        print(f"Score improvement: {avg_with_order - avg_no_order:+.4f}")
+
+        # Count improvements
+        improved = sum(
+            1 for src in scores_no_order if src in scores_with_order and scores_with_order[src] > scores_no_order[src]
+        )
+        same = sum(
+            1
+            for src in scores_no_order
+            if src in scores_with_order and abs(scores_with_order[src] - scores_no_order[src]) < 1e-6
+        )
+        worse = sum(
+            1 for src in scores_no_order if src in scores_with_order and scores_with_order[src] < scores_no_order[src]
+        )
+
+        print(f"Score changes: {improved} improved, {same} unchanged, {worse} worse")
+
+        # Verify execution order helps or doesn't hurt
+        assert improved + same >= worse, "Execution order should improve or maintain matching quality"
+
+    # 6. Verify both mappings are valid (1-to-1, type-consistent)
+    for mapping in [mapping_no_order, mapping_with_order]:
+        for source_name, target_name in mapping.items():
+            source_type = source_name.split(".")[-1]
+            target_type = target_name.split(".")[-1]
+            assert source_type == target_type, f"Type mismatch: {source_name} -> {target_name}"
+
+    print("✓ Execution order tracking validated in complete workflow")

@@ -315,3 +315,135 @@ def test_different_model_configurations(simple_model_class: nn.Module, renamed_m
     unmatched = mapper.get_unmatched()
     assert len(unmatched["source"]) > 0  # Source has extra layers
     assert len(unmatched["target"]) >= 0  # Target may have unmatched params
+
+
+def test_execution_order_tracking(simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test that execution order tracking works when dummy_input is provided."""
+    # Without dummy_input - no execution order
+    mapper_no_order = WeightMapper(simple_model, renamed_model)
+    assert all(p.execution_order is None for p in mapper_no_order.source_params.values())
+    assert all(p.execution_order is None for p in mapper_no_order.target_params.values())
+
+    # With dummy_input - execution order tracked
+    dummy_input = torch.randn(1, 3, 32, 32)
+    mapper_with_order = WeightMapper(simple_model, renamed_model, dummy_input=dummy_input)
+
+    # Should have execution order for most parameters (those in modules that get executed)
+    source_with_order = sum(1 for p in mapper_with_order.source_params.values() if p.execution_order is not None)
+    target_with_order = sum(1 for p in mapper_with_order.target_params.values() if p.execution_order is not None)
+
+    assert source_with_order > 0, "Should track execution order for at least some source parameters"
+    assert target_with_order > 0, "Should track execution order for at least some target parameters"
+
+
+def test_execution_order_improves_matching_scores(simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test that execution order tracking can improve matching scores."""
+    dummy_input = torch.randn(1, 3, 32, 32)
+
+    # Create two mappers: one with execution order, one without
+    mapper_no_order = WeightMapper(simple_model, renamed_model)
+    mapper_with_order = WeightMapper(simple_model, renamed_model, dummy_input=dummy_input)
+
+    # Generate mappings
+    mapping_no_order = mapper_no_order.suggest_mapping(threshold=0.5)
+    mapping_with_order = mapper_with_order.suggest_mapping(threshold=0.5)
+
+    # Both should find the same number of mappings (same architectures)
+    assert len(mapping_no_order) == len(mapping_with_order)
+
+    # Get scores for comparison
+    scores_no_order = mapper_no_order.get_mapping_with_scores()
+    scores_with_order = mapper_with_order.get_mapping_with_scores()
+
+    # Convert to dicts for easier comparison
+    score_dict_no_order = {src: score for src, _, score in scores_no_order}
+    score_dict_with_order = {src: score for src, _, score in scores_with_order}
+
+    # Count how many scores improved, stayed the same, or got worse
+    improved = 0
+    same = 0
+    worse = 0
+
+    for src in score_dict_no_order:
+        if src in score_dict_with_order:
+            diff = score_dict_with_order[src] - score_dict_no_order[src]
+            if abs(diff) < 1e-6:  # Essentially the same
+                same += 1
+            elif diff > 0:
+                improved += 1
+            else:
+                worse += 1
+
+    print(f"\nExecution order impact: {improved} improved, {same} same, {worse} worse")
+
+    # For models with renamed but structurally similar architectures,
+    # execution order should help or at least not hurt
+    assert improved + same >= worse, "Execution order should improve or maintain scores"
+
+    # Average scores should be at least as good
+    avg_score_no_order = sum(score_dict_no_order.values()) / len(score_dict_no_order)
+    avg_score_with_order = sum(score_dict_with_order.values()) / len(score_dict_with_order)
+
+    print(f"Average score without order: {avg_score_no_order:.4f}")
+    print(f"Average score with order: {avg_score_with_order:.4f}")
+
+    # With execution order, average score should be at least as good
+    assert avg_score_with_order >= avg_score_no_order - 1e-6
+
+
+def test_execution_order_from_checkpoint(tmp_path: Path, simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test execution order tracking with from_checkpoint method."""
+    # Save source model
+    checkpoint_path = tmp_path / "model.pth"
+    torch.save({"state_dict": simple_model.state_dict()}, checkpoint_path)
+
+    # Without dummy_input
+    mapper_no_order = WeightMapper.from_checkpoint(checkpoint_path, renamed_model)
+    assert all(p.execution_order is None for p in mapper_no_order.target_params.values())
+
+    # With dummy_input
+    dummy_input = torch.randn(1, 3, 32, 32)
+    mapper_with_order = WeightMapper.from_checkpoint(checkpoint_path, renamed_model, dummy_input=dummy_input)
+
+    target_with_order = sum(1 for p in mapper_with_order.target_params.values() if p.execution_order is not None)
+    assert target_with_order > 0, "Should track execution order when dummy_input provided"
+
+
+def test_execution_order_consistency(simple_model: nn.Module) -> None:
+    """Test that execution order is consistent across multiple runs."""
+    dummy_input = torch.randn(1, 3, 32, 32)
+
+    # Create mapper twice with same input
+    mapper1 = WeightMapper(simple_model, simple_model, dummy_input=dummy_input)
+    mapper2 = WeightMapper(simple_model, simple_model, dummy_input=dummy_input)
+
+    # Execution order should be the same
+    for param_name in mapper1.source_params:
+        order1 = mapper1.source_params[param_name].execution_order
+        order2 = mapper2.source_params[param_name].execution_order
+        assert order1 == order2, f"Execution order should be consistent for {param_name}"
+
+
+def test_execution_order_with_complex_architectures(
+    simple_model_class: nn.Module, renamed_model_class: nn.Module
+) -> None:
+    """Test execution order with more complex model configurations."""
+    # Create larger models
+    source = simple_model_class(num_conv_layers=3, num_fc_layers=3, hidden_dim=256)
+    target = renamed_model_class(num_conv_layers=3, num_fc_layers=3, hidden_dim=256)
+
+    dummy_input = torch.randn(1, 3, 32, 32)
+
+    # With execution order tracking
+    mapper = WeightMapper(source, target, dummy_input=dummy_input)
+    mapping = mapper.suggest_mapping(threshold=0.5)
+
+    # Should find good matches even with larger architectures
+    assert len(mapping) > 15, "Should find many matches in larger identical architectures"
+
+    # Get scores to verify quality
+    scores = mapper.get_mapping_with_scores()
+    avg_score = sum(s for _, _, s in scores) / len(scores)
+
+    print(f"\nComplex architecture average score: {avg_score:.4f}")
+    assert avg_score > 0.6, "Should maintain good matching quality with execution order"

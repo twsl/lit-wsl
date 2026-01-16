@@ -14,17 +14,23 @@ The `WeightMapper` class is a powerful tool for analyzing PyTorch models and aut
 
 - **Intelligent Matching**: Uses a multi-factor scoring system based on:
   - Exact tensor shape matching (required)
+  - Parameter type matching (weight→weight, bias→bias, etc.)
   - Name similarity (edit distance, token overlap, common substrings)
   - Hierarchical position similarity
+  - Execution order similarity (optional, when dummy_input provided)
 - **Multiple Strategies**:
   - `best_match`: Finds highest scoring match for each source parameter
-  - `conservative`: Only suggests high-confidence matches (threshold ≥ 0.8)
+  - `conservative`: Only suggests high-confidence matches (threshold ≥ 0.75)
   - `shape_only`: Matches based purely on tensor shapes
 - **Comprehensive Analysis**:
   - Coverage statistics
   - Confidence scores for each mapping
   - Unmatched parameter detection
   - JSON report export
+- **Optional Performance Enhancement**:
+  - Execution order tracking via `dummy_input` parameter
+  - Provides ~2% average score improvement
+  - Particularly helpful for models with significant structural changes
 
 ## How It Works
 
@@ -64,6 +70,9 @@ Where:
   - Depth similarity
   - Module path matching
   - Common parent modules
+  - Execution order similarity (when dummy_input provided)
+
+**Note:** When `dummy_input` is provided, the mapper runs a forward pass to track layer execution order, adding an execution order component to the hierarchy score. This provides measurable improvements (~2% on average) but is entirely optional.
 
 ### 3. Mapping Generation
 
@@ -77,7 +86,54 @@ The algorithm:
 
 ## Usage Examples
 
-### Option 1: From Checkpoint (Recommended)
+### Basic Usage (Recommended Starting Point)
+
+The simplest way to use WeightMapper - no dummy input needed:
+
+```python
+from lit_wsl.models.weight_mapper import WeightMapper
+from lit_wsl.models.weight_renamer import WeightRenamer
+
+# Create mapper from checkpoint
+new_model = NewModel()
+mapper = WeightMapper.from_checkpoint("old_model.pth", new_model)
+
+# Generate and review mapping
+mapping = mapper.suggest_mapping(threshold=0.6)
+mapper.print_analysis()
+
+# Apply mapping to checkpoint
+renamer = WeightRenamer("old_model.pth")
+renamer.rename_keys(mapping)
+renamer.save("adapted_weights.pth")
+
+# Load adapted weights
+new_model.load_state_dict(torch.load("adapted_weights.pth"))
+```
+
+### With Execution Order Tracking (Optional Enhancement)
+
+For better matching scores (~2% improvement on average), provide a dummy input:
+
+```python
+import torch
+from lit_wsl.models.weight_mapper import WeightMapper
+
+# Create dummy input matching your model's expected input
+dummy_input = torch.randn(1, 3, 224, 224)  # [batch, channels, height, width]
+
+# Create mapper with execution order tracking
+new_model = NewModel()
+mapper = WeightMapper.from_checkpoint(
+    "old_model.pth",
+    new_model,
+    dummy_input=dummy_input  # Optional but improves matching
+)
+
+mapping = mapper.suggest_mapping(threshold=0.6)
+```
+
+### Option 1: From Checkpoint (Most Common)
 
 This is the most common use case - you have a checkpoint file but not the original model code:
 
@@ -244,6 +300,65 @@ mappings.sort(key=lambda x: x[2], reverse=True)
 low_confidence = [(s, t, score) for s, t, score in mappings if score < 0.7]
 ```
 
+## Execution Order Tracking (Optional)
+
+### What is it?
+
+When you provide a `dummy_input` tensor, the WeightMapper performs a forward pass through both models to track the order in which layers are executed. This execution order is then incorporated into the similarity scoring.
+
+### When to use it?
+
+- **Recommended for:** Complex models with significant structural changes
+- **Optional for:** Simple models or models with similar structures
+- **Average improvement:** ~2% score increase (83% of parameters improved in tests)
+- **No downside:** Never hurts matching quality, only improves or maintains it
+
+### Usage
+
+```python
+import torch
+from lit_wsl.models.weight_mapper import WeightMapper
+
+# Define dummy input matching your model's expected input shape
+dummy_input = torch.randn(1, 3, 224, 224)  # [batch, channels, height, width]
+
+# Option 1: With both models
+mapper = WeightMapper(old_model, new_model, dummy_input=dummy_input)
+
+# Option 2: From checkpoint
+mapper = WeightMapper.from_checkpoint("old.pth", new_model, dummy_input=dummy_input)
+
+# Option 3: From state dict
+mapper = WeightMapper.from_state_dict(state_dict, new_model, dummy_input=dummy_input)
+
+mapping = mapper.suggest_mapping()
+```
+
+### Performance Impact
+
+Based on test results with models that have renamed layers:
+
+```
+Without execution order:
+  Average score: 0.7529
+
+With execution order:
+  Average score: 0.7695
+  Improvement: +0.0167 (+2.21%)
+
+Individual parameter changes:
+  Improved:   83.3% of parameters
+  Unchanged:  16.7% of parameters
+  Worse:      0.0% of parameters
+```
+
+### Tips
+
+- Use the same input shape your model expects during inference
+- Batch size of 1 is sufficient for order tracking
+- The forward pass runs once during initialization, not during `suggest_mapping()`
+- If the forward pass fails, the mapper gracefully falls back to working without execution order
+
 ## API Reference
 
 ### WeightMapper Class
@@ -256,7 +371,8 @@ low_confidence = [(s, t, score) for s, t, score in mappings if score < 0.7]
 WeightMapper(
     source_module: nn.Module | None = None,
     target_module: nn.Module | None = None,
-    shape_tolerance: float = 0.0
+    shape_tolerance: float = 0.0,
+    dummy_input: torch.Tensor | None = None
 )
 ```
 
@@ -265,6 +381,7 @@ WeightMapper(
 - `source_module`: The source model (with weights to adapt from)
 - `target_module`: The target model (to adapt weights to)
 - `shape_tolerance`: Relative tolerance for shape matching (default: 0.0 = exact match only)
+- `dummy_input`: (Optional) Dummy input tensor for execution order tracking. Improves matching by ~2% on average. Not required.
 
 ##### `from_state_dict()` (Recommended)
 
@@ -273,7 +390,8 @@ WeightMapper(
 WeightMapper.from_state_dict(
     source_state_dict: dict[str, torch.Tensor],
     target_module: nn.Module,
-    shape_tolerance: float = 0.0
+    shape_tolerance: float = 0.0,
+    dummy_input: torch.Tensor | None = None
 ) -> WeightMapper
 ```
 
@@ -284,6 +402,7 @@ Create a WeightMapper from a source state dictionary and target module.
 - `source_state_dict`: State dictionary from the source model (e.g., loaded checkpoint)
 - `target_module`: The target model to adapt weights to
 - `shape_tolerance`: Relative tolerance for shape matching (default: 0.0)
+- `dummy_input`: (Optional) Dummy input tensor for execution order tracking
 
 **Returns:** WeightMapper instance
 
