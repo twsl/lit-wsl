@@ -27,10 +27,13 @@ def test_weight_mapper_initialization(simple_model: nn.Module, renamed_model: nn
 
     mapper = WeightMapper(source, target)
 
-    # Each model has: 2 conv layers (weight+bias+bn_weight+bn_bias each) + 2 fc layers (weight+bias each)
-    # = 8 conv params + 4 fc params = 12 total
-    assert len(mapper.source_params) == 12
-    assert len(mapper.target_params) == 12
+    # Each model has:
+    # - 2 conv layers with weight+bias (4 params)
+    # - 2 BatchNorm layers with weight+bias+running_mean+running_var+num_batches_tracked (10 params+buffers)
+    # - 2 fc layers with weight+bias (4 params)
+    # Total: 12 parameters + 6 buffers = 18
+    assert len(mapper.source_params) == 18
+    assert len(mapper.target_params) == 18
     assert len(mapper.target_by_shape) > 0
 
 
@@ -42,8 +45,8 @@ def test_suggest_mapping_best_match(simple_model: nn.Module, renamed_model: nn.M
     mapper = WeightMapper(source, target)
     mapping = mapper.suggest_mapping(threshold=0.5)
 
-    # Should find matches for most parameters
-    assert len(mapping) >= 10  # At least most params should match
+    # Should find matches for most parameters (including buffers)
+    assert len(mapping) >= 16  # At least most params+buffers should match
 
     # Check some specific nested mappings exist
     assert any("encoder.layers" in key for key in mapping)
@@ -58,8 +61,8 @@ def test_suggest_mapping_shape_only(simple_model: nn.Module, renamed_model: nn.M
     mapper = WeightMapper(source, target)
     mapping = mapper.suggest_mapping(strategy="shape_only")
 
-    # Should match all parameters by shape since architectures are identical
-    assert len(mapping) == 12
+    # Should match all parameters+buffers by shape since architectures are identical
+    assert len(mapping) == 18
 
 
 def test_suggest_mapping_conservative(simple_model: nn.Module, renamed_model: nn.Module) -> None:
@@ -71,7 +74,7 @@ def test_suggest_mapping_conservative(simple_model: nn.Module, renamed_model: nn
     mapping = mapper.suggest_mapping(strategy="conservative")
 
     # Conservative strategy may match fewer parameters due to high threshold
-    assert len(mapping) <= 12
+    assert len(mapping) <= 18
     assert len(mapping) > 0  # Should match at least some
 
 
@@ -174,10 +177,35 @@ def test_exact_match_names(simple_model_class: nn.Module) -> None:
     mapper = WeightMapper(source, target)
     mapping = mapper.suggest_mapping()
 
-    # All parameters should match with their exact counterparts
-    assert len(mapping) == 12
+    # All parameters and buffers should match with their exact counterparts
+    assert len(mapping) == 18
     for source_name in mapping:
         assert mapping[source_name] == source_name  # Exact name match
+
+
+def test_match_with_itself(simple_model: nn.Module) -> None:
+    """Test that a model matches perfectly with itself."""
+    # Use the same model instance as both source and target
+    mapper = WeightMapper(simple_model, simple_model)
+    mapping = mapper.suggest_mapping()
+
+    # All parameters and buffers should map to themselves
+    assert len(mapping) == 18, "Should map all 18 parameters and buffers"
+
+    # Every parameter should map to itself with the same name
+    for source_name, target_name in mapping.items():
+        assert source_name == target_name, f"Parameter {source_name} should map to itself"
+
+    # All scores should be perfect (1.0) since everything is identical
+    mappings_with_scores = mapper.get_mapping_with_scores()
+    for source_name, target_name, score in mappings_with_scores:
+        assert score >= 0.95, f"Score for {source_name} should be near perfect, got {score:.4f}"
+        assert source_name == target_name, "Names should match exactly"
+
+    # There should be no unmatched parameters
+    unmatched = mapper.get_unmatched()
+    assert len(unmatched["source"]) == 0, "No source parameters should be unmatched"
+    assert len(unmatched["target"]) == 0, "No target parameters should be unmatched"
 
 
 def test_from_state_dict(simple_model: nn.Module, renamed_model: nn.Module) -> None:
@@ -192,10 +220,9 @@ def test_from_state_dict(simple_model: nn.Module, renamed_model: nn.Module) -> N
     # Create mapper from state dict
     mapper = WeightMapper.from_state_dict(state_dict, target)
 
-    # Source from state dict includes BatchNorm buffers (18 total)
-    # Target from module has only parameters (12 total)
+    # Both source and target now include parameters and buffers (18 total)
     assert len(mapper.source_params) == 18
-    assert len(mapper.target_params) == 12
+    assert len(mapper.target_params) == 18
 
     # Should be able to create mapping
     mapping = mapper.suggest_mapping()
@@ -221,10 +248,9 @@ def test_from_state_dict_nested(simple_model: nn.Module, renamed_model: nn.Modul
     # Extract state_dict manually
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target)
 
-    # Source from state dict includes BatchNorm buffers (18)
-    # Target from module has only parameters (12)
+    # Both source and target now include parameters and buffers (18 total)
     assert len(mapper.source_params) == 18
-    assert len(mapper.target_params) == 12
+    assert len(mapper.target_params) == 18
 
     mapping = mapper.suggest_mapping()
     assert len(mapping) > 0
@@ -254,10 +280,9 @@ def test_from_checkpoint(tmp_path: Path, simple_model: nn.Module, renamed_model:
     # Create mapper from checkpoint file
     mapper = WeightMapper.from_checkpoint(checkpoint_path, target)
 
-    # Source from state dict includes BatchNorm buffers (18)
-    # Target from module has only parameters (12)
+    # Both source and target now include parameters and buffers (18 total)
     assert len(mapper.source_params) == 18
-    assert len(mapper.target_params) == 12
+    assert len(mapper.target_params) == 18
 
     # Should be able to create mapping
     mapping = mapper.suggest_mapping()
@@ -284,10 +309,9 @@ def test_from_checkpoint_simple_state_dict(tmp_path: Path, simple_model: nn.Modu
     # Create mapper from checkpoint file
     mapper = WeightMapper.from_checkpoint(checkpoint_path, target)
 
-    # Source from state dict includes BatchNorm buffers (18)
-    # Target from module has only parameters (12)
+    # Both source and target now include parameters and buffers (18 total)
     assert len(mapper.source_params) == 18
-    assert len(mapper.target_params) == 12
+    assert len(mapper.target_params) == 18
 
     # Should be able to create mapping
     mapping = mapper.suggest_mapping()

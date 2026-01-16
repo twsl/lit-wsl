@@ -111,10 +111,10 @@ def test_weight_mapping_with_identical_architectures(tmp_path: Path, simple_mode
     mapper = WeightMapper.from_checkpoint(checkpoint_path, target_model)
     mapping = mapper.suggest_mapping()
 
-    # With identical architectures, all parameters should map
-    # Note: state_dict has 18 entries (12 params + 6 buffers), but only 12 params are mapped
+    # With identical architectures, all parameters and buffers should map
+    # Note: state_dict has 18 entries (12 params + 6 buffers)
     print(f"\nMapped {len(mapping)} parameters")
-    assert len(mapping) == 12  # All parameters should map
+    assert len(mapping) == 18  # All parameters and buffers should map
     # Validate parameter type matching
     for source_name, target_name in mapping.items():
         source_type = source_name.split(".")[-1]
@@ -149,6 +149,7 @@ def test_weight_mapping_with_identical_architectures(tmp_path: Path, simple_mode
 
     diff = torch.abs(source_output - target_output).mean().item()
     print(f"Mean absolute difference: {diff:.6f}")
+    assert torch.allclose(source_output, target_output, atol=1e-5)
     print("✓ Identical architecture mapping successful!")
 
 

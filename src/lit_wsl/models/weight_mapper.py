@@ -1,7 +1,116 @@
+from __future__ import annotations
+
+from logging import Logger
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch import Tensor, nn
+
+from lit_wsl.utils.logger import get_logger
+
+
+class ModuleNode:
+    """Represents a node in the hierarchical module structure."""
+
+    def __init__(self, name: str, full_path: str, depth: int) -> None:
+        """Initialize a module node.
+
+        Args:
+            name: The module name (e.g., 'conv1')
+            full_path: The full module path (e.g., 'encoder.layer1.conv1')
+            depth: Depth in the hierarchy (0 for root)
+        """
+        self.name = name
+        self.full_path = full_path
+        self.depth = depth
+        self.children: dict[str, ModuleNode] = {}
+        self.parent: ModuleNode | None = None
+        self.parameter_group: ParameterGroup | None = None
+
+    def add_child(self, child: ModuleNode) -> None:
+        """Add a child node."""
+        self.children[child.name] = child
+        child.parent = self
+
+    def get_descendant_groups(self) -> list[ParameterGroup]:
+        """Get all parameter groups in this subtree."""
+        groups = []
+        if self.parameter_group is not None:
+            groups.append(self.parameter_group)
+        for child in self.children.values():
+            groups.extend(child.get_descendant_groups())
+        return groups
+
+    def is_leaf(self) -> bool:
+        """Check if this is a leaf node (has no children)."""
+        return len(self.children) == 0
+
+    def __repr__(self) -> str:
+        param_info = f", params={len(self.parameter_group.param_types)}" if self.parameter_group else ""
+        return f"ModuleNode('{self.full_path}', depth={self.depth}{param_info})"
+
+
+class ParameterGroup:
+    """Represents a group of logically connected parameters (e.g., weight+bias for a layer)."""
+
+    def __init__(self, module_path: str, params: dict[str, ParameterInfo]) -> None:
+        """Initialize a parameter group.
+
+        Args:
+            module_path: The module path that these parameters belong to (e.g., 'layer1.conv')
+            params: Dictionary mapping parameter type (weight, bias, etc.) to ParameterInfo
+        """
+        self.module_path = module_path
+        self.params = params
+        self.param_types = set(params.keys())
+
+        # Extract common metadata
+        if params:
+            first_param = next(iter(params.values()))
+            self.depth = first_param.depth - 1  # Depth of the module, not the parameter
+            self.module_parts = module_path.split(".") if module_path else []
+            self.execution_order = first_param.execution_order
+        else:
+            self.depth = 0
+            self.module_parts = []
+            self.execution_order = None
+
+    def has_param_type(self, param_type: str) -> bool:
+        """Check if this group has a specific parameter type."""
+        return param_type in self.param_types
+
+    def get_param(self, param_type: str) -> ParameterInfo | None:
+        """Get parameter info for a specific type."""
+        return self.params.get(param_type)
+
+    def is_compatible_with(self, other: ParameterGroup) -> bool:
+        """Check if this group is compatible with another group for mapping.
+
+        Compatible groups have:
+        1. At least some common parameter types (subset matching allowed)
+        2. Matching shapes for all common parameter types
+
+        This allows partial matching where one group may have additional parameters
+        (e.g., BatchNorm buffers) that the other doesn't have.
+        """
+        # Must have at least some common parameter types
+        common_types = self.param_types & other.param_types
+        if not common_types:
+            return False
+
+        # All common parameter types must have the same shape
+        for param_type in common_types:
+            self_param = self.params[param_type]
+            other_param = other.params[param_type]
+            if self_param.shape != other_param.shape:
+                return False
+
+        return True
+
+    def __repr__(self) -> str:
+        param_types = ", ".join(sorted(self.param_types))
+        return f"ParameterGroup(path='{self.module_path}', types=[{param_types}])"
 
 
 class ParameterInfo:
@@ -121,6 +230,7 @@ class WeightMapper:
                         by ~2% on average. Recommended for complex architectures with
                         significant structural changes.
         """
+        self.logger: Logger = get_logger(self.__class__.__name__)
         self.source_module = source_module
         self.target_module = target_module
         self.shape_tolerance = shape_tolerance
@@ -144,9 +254,24 @@ class WeightMapper:
         # Build shape index for fast lookups
         self.target_by_shape = self._build_shape_index(self.target_params)
 
+        # Extract parameter groups
+        self.source_groups = self._extract_parameter_groups(self.source_params)
+        self.target_groups = self._extract_parameter_groups(self.target_params)
+
+        # Build hierarchical structure
+        self.source_hierarchy = self._build_hierarchy(self.source_groups)
+        self.target_hierarchy = self._build_hierarchy(self.target_groups)
+
+        # Build group index by parameter types for fast lookups
+        self.target_groups_by_types = self._build_group_index(self.target_groups)
+
         # Storage for mapping results
         self._mapping: dict[str, str] | None = None
         self._scores: dict[str, float] | None = None
+        self._group_mapping: dict[str, str] | None = None  # Maps module paths
+        self._group_scores: dict[str, float] | None = None
+        self._hierarchy_context: dict[str, float] | None = None  # Hierarchical bonus scores
+        self._transformations: dict[str, dict[str, Any]] | None = None  # Transformation metadata
 
     @classmethod
     def from_state_dict(
@@ -155,7 +280,7 @@ class WeightMapper:
         target_module: nn.Module,
         shape_tolerance: float = 0.0,
         dummy_input: torch.Tensor | None = None,
-    ) -> "WeightMapper":
+    ) -> WeightMapper:
         """Create a WeightMapper from a source state dictionary and target module.
 
         This is useful when you only have a checkpoint file but not the original model.
@@ -210,7 +335,7 @@ class WeightMapper:
         target_module: nn.Module,
         shape_tolerance: float = 0.0,
         dummy_input: torch.Tensor | None = None,
-    ) -> "WeightMapper":
+    ) -> WeightMapper:
         """Create a WeightMapper from a checkpoint file and target module.
 
         Convenience method that loads the checkpoint and extracts the state dict.
@@ -291,17 +416,31 @@ class WeightMapper:
         execution_order_map = {}
 
         if dummy_input is not None:
-            import contextlib
+            import warnings
 
-            with contextlib.suppress(Exception):
+            try:
                 execution_order_map = WeightMapper._get_execution_order(module, dummy_input)
+            except Exception as e:
+                warnings.warn(
+                    f"Execution order tracking failed: {e}. Proceeding without execution order information.",
+                    stacklevel=2,
+                )
 
         params = {}
+        # Extract parameters
         for name, param in module.named_parameters():
             # Get module path from parameter name (remove last component which is the param type)
             module_path = ".".join(name.split(".")[:-1])
             execution_order = execution_order_map.get(module_path, None)
             params[name] = ParameterInfo(name, param, execution_order)
+
+        # Also extract buffers (running_mean, running_var, num_batches_tracked, etc.)
+        # This ensures consistency with state_dict which includes both parameters and buffers
+        for name, buffer in module.named_buffers():
+            module_path = ".".join(name.split(".")[:-1])
+            execution_order = execution_order_map.get(module_path, None)
+            params[name] = ParameterInfo(name, buffer, execution_order)
+
         return params
 
     @staticmethod
@@ -314,8 +453,24 @@ class WeightMapper:
 
         Returns:
             Dictionary mapping module paths to execution order indices
+
+        Raises:
+            RuntimeError: If forward pass fails with the provided dummy_input
         """
         import torch
+
+        # Validate that dummy_input is compatible with module
+        try:
+            module.eval()
+            with torch.no_grad():
+                test_output = module(dummy_input)
+            del test_output  # Free memory
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to run forward pass with provided dummy_input. "
+                f"Please ensure the input shape and type are compatible with the model. "
+                f"Error: {e}"
+            ) from e
 
         execution_order = {}
         order_counter = [0]  # Use list to allow modification in closure
@@ -365,11 +520,174 @@ class WeightMapper:
             Dictionary mapping shapes to list of parameter names
         """
         index = {}
-        for name, info in params.items():
+        for param_name, info in params.items():
             if info.shape not in index:
                 index[info.shape] = []
-            index[info.shape].append(name)
+            index[info.shape].append(param_name)
         return index
+
+    def _extract_parameter_groups(self, params: dict[str, ParameterInfo]) -> dict[str, ParameterGroup]:
+        """Extract parameter groups from parameters.
+
+        Groups parameters by their module path (e.g., all weight, bias for a layer).
+
+        Args:
+            params: Dictionary of parameter information
+
+        Returns:
+            Dictionary mapping module paths to ParameterGroup objects
+        """
+        groups_dict: dict[str, dict[str, ParameterInfo]] = {}
+
+        for _name, info in params.items():
+            module_path = info.module_path
+            param_type = info.param_name
+
+            if module_path not in groups_dict:
+                groups_dict[module_path] = {}
+
+            groups_dict[module_path][param_type] = info
+
+        # Convert to ParameterGroup objects
+        groups = {}
+        for module_path, param_dict in groups_dict.items():
+            groups[module_path] = ParameterGroup(module_path, param_dict)
+
+        return groups
+
+    def _build_group_index(self, groups: dict[str, ParameterGroup]) -> dict[frozenset, list[str]]:
+        """Build an index of groups by their parameter types.
+
+        Args:
+            groups: Dictionary of ParameterGroup objects
+
+        Returns:
+            Dictionary mapping frozensets of parameter types to list of module paths
+        """
+        index: dict[frozenset, list[str]] = {}
+        for module_path, group in groups.items():
+            param_types = frozenset(group.param_types)
+            if param_types not in index:
+                index[param_types] = []
+            index[param_types].append(module_path)
+        return index
+
+    def _build_hierarchy(self, groups: dict[str, ParameterGroup]) -> ModuleNode:
+        """Build a hierarchical tree structure from parameter groups.
+
+        Args:
+            groups: Dictionary mapping module paths to ParameterGroup objects
+
+        Returns:
+            Root ModuleNode of the hierarchy tree
+        """
+        root = ModuleNode("", "", 0)
+        nodes: dict[str, ModuleNode] = {"": root}
+
+        # Sort paths to ensure parents are created before children
+        sorted_paths = sorted(groups.keys(), key=lambda x: (x.count("."), x))
+
+        for module_path in sorted_paths:
+            if not module_path:  # Skip empty path
+                continue
+
+            parts = module_path.split(".")
+
+            # Create all intermediate nodes if they don't exist
+            for i in range(1, len(parts) + 1):
+                partial_path = ".".join(parts[:i])
+                if partial_path not in nodes:
+                    parent_path = ".".join(parts[: i - 1]) if i > 1 else ""
+                    parent_node = nodes[parent_path]
+                    new_node = ModuleNode(parts[i - 1], partial_path, i)
+                    parent_node.add_child(new_node)
+                    nodes[partial_path] = new_node
+
+            # Attach parameter group to the leaf node
+            if module_path in groups:
+                nodes[module_path].parameter_group = groups[module_path]
+
+        return root
+
+    def _compute_hierarchy_context_score(
+        self,
+        source_path: str,
+        target_path: str,
+        group_mapping: dict[str, str],
+    ) -> float:
+        """Compute hierarchical context score based on parent/sibling mappings.
+
+        Args:
+            source_path: Source module path
+            target_path: Target module path
+            group_mapping: Current group mapping (parent modules may be mapped)
+
+        Returns:
+            Context bonus score between 0.0 and 1.0
+        """
+        if not source_path or not target_path:
+            return 0.5  # Neutral for root
+
+        source_parts = source_path.split(".")
+        target_parts = target_path.split(".")
+
+        # Check if parent modules are mapped
+        parent_match_bonus = 0.0
+        for i in range(1, min(len(source_parts), len(target_parts))):
+            source_parent = ".".join(source_parts[:i])
+            target_parent = ".".join(target_parts[:i])
+
+            if source_parent in group_mapping and group_mapping[source_parent] == target_parent:
+                # Parent is mapped correctly - strong bonus
+                parent_match_bonus += 0.3 / i  # Closer parents get higher weight
+
+        # Check structural similarity (same depth, similar position)
+        depth_match = 1.0 if len(source_parts) == len(target_parts) else 0.5
+
+        # Combine scores
+        return min(1.0, 0.5 * depth_match + 0.5 * min(1.0, parent_match_bonus))
+
+    def _compute_shape_score_with_transform(
+        self, source_info: ParameterInfo, target_info: ParameterInfo
+    ) -> tuple[float, dict[str, Any] | None]:
+        """Compute shape similarity score and determine if transformation is needed.
+
+        Args:
+            source_info: Source parameter info
+            target_info: Target parameter info
+
+        Returns:
+            Tuple of (score, transformation_info) where transformation_info is None
+            if no transformation needed, or a dict with transformation details
+        """
+        if source_info.shape == target_info.shape:
+            return 1.0, None
+
+        # Check if shapes are transposed (e.g., for different Conv implementations)
+        if len(source_info.shape) == len(target_info.shape) and sorted(source_info.shape) == sorted(target_info.shape):
+            # Find the permutation needed
+            # This is a simple case - for full implementation, would need more sophisticated matching
+            transform_info = {
+                "type": "transpose",
+                "note": "Shapes are permutations of each other",
+                "source_shape": source_info.shape,
+                "target_shape": target_info.shape,
+            }
+            return 0.7, transform_info
+
+        # Check relative size similarity if tolerance is set
+        if self.shape_tolerance > 0:
+            size_ratio = min(source_info.numel, target_info.numel) / max(source_info.numel, target_info.numel)
+            if size_ratio >= (1.0 - self.shape_tolerance):
+                transform_info = {
+                    "type": "reshape",
+                    "note": "Shapes have similar total elements",
+                    "source_shape": source_info.shape,
+                    "target_shape": target_info.shape,
+                }
+                return 0.5 * size_ratio, transform_info
+
+        return 0.0, None
 
     def _compute_shape_score(self, source_info: ParameterInfo, target_info: ParameterInfo) -> float:
         """Compute shape similarity score.
@@ -381,20 +699,8 @@ class WeightMapper:
         Returns:
             Score between 0.0 and 1.0
         """
-        if source_info.shape == target_info.shape:
-            return 1.0
-
-        # Check if shapes are transposed (e.g., for different Conv implementations)
-        if len(source_info.shape) == len(target_info.shape) and sorted(source_info.shape) == sorted(target_info.shape):
-            return 0.7
-
-        # Check relative size similarity if tolerance is set
-        if self.shape_tolerance > 0:
-            size_ratio = min(source_info.numel, target_info.numel) / max(source_info.numel, target_info.numel)
-            if size_ratio >= (1.0 - self.shape_tolerance):
-                return 0.5 * size_ratio
-
-        return 0.0
+        score, _ = self._compute_shape_score_with_transform(source_info, target_info)
+        return score
 
     def _compute_name_similarity(self, source_info: ParameterInfo, target_info: ParameterInfo) -> float:
         """Compute name similarity score using multiple metrics.
@@ -560,13 +866,47 @@ class WeightMapper:
 
         return weights["shape"] * shape_score + weights["name"] * name_score + weights["hierarchy"] * hierarchy_score
 
+    def _compute_group_similarity(
+        self,
+        source_group: ParameterGroup,
+        target_group: ParameterGroup,
+        weights: dict[str, float] | None = None,
+    ) -> float:
+        """Compute similarity score between two parameter groups.
+
+        Args:
+            source_group: Source parameter group
+            target_group: Target parameter group
+            weights: Custom weights for scoring components
+
+        Returns:
+            Composite score between 0.0 and 1.0
+        """
+        # Groups must be compatible (same param types and shapes)
+        if not source_group.is_compatible_with(target_group):
+            return 0.0
+
+        # Compute average score across all parameters in the group
+        total_score = 0.0
+        num_params = len(source_group.param_types)
+
+        for param_type in source_group.param_types:
+            source_info = source_group.params[param_type]
+            target_info = target_group.params[param_type]
+            total_score += self._compute_composite_score(source_info, target_info, weights)
+
+        return total_score / num_params if num_params > 0 else 0.0
+
     def suggest_mapping(
         self,
         threshold: float = 0.6,
         strategy: str = "best_match",
         weights: dict[str, float] | None = None,
     ) -> dict[str, str]:
-        """Generate suggested parameter name mapping.
+        """Generate suggested parameter name mapping using group-based matching.
+
+        This method groups logically connected parameters (e.g., weight+bias) and
+        assigns them together, ensuring all connected elements are mapped as a unit.
 
         Args:
             threshold: Minimum score threshold for suggesting a match
@@ -578,83 +918,199 @@ class WeightMapper:
 
         Returns:
             Dictionary mapping source parameter names to target parameter names
-            This ensures 1-to-1 mapping with parameter type matching
+            This ensures 1-to-1 mapping with parameter type matching and
+            groups of connected parameters assigned together
         """
-        mapping = {}
-        scores = {}
-        used_targets = set()
-
         # Adjust threshold based on strategy
+        # Note: With hierarchical context, final scores are: 0.8*base + 0.2*context
+        # So we adjust thresholds to account for this
         if strategy == "conservative":
-            threshold = max(threshold, 0.75)  # Conservative but not too strict
+            threshold = max(threshold, 0.65)
         elif strategy == "shape_only":
             weights = {"shape": 1.0, "name": 0.0, "hierarchy": 0.0}
 
-        # Group source parameters by type (weight, bias, etc.) for better matching
-        source_by_type = {}
-        for name, info in self.source_params.items():
-            param_type = info.param_name
-            if param_type not in source_by_type:
-                source_by_type[param_type] = []
-            source_by_type[param_type].append(name)
+        # First, perform group-based matching
+        group_mapping, group_scores = self._suggest_group_mapping(threshold, weights)
 
-        # Process each parameter type separately to ensure type matching
-        for param_type in sorted(source_by_type.keys()):
-            # Sort source parameters of this type for consistent ordering
-            source_names = sorted(source_by_type[param_type])
+        # Convert group mapping to individual parameter mapping
+        mapping = {}
+        scores = {}
 
-            for source_name in source_names:
-                source_info = self.source_params[source_name]
+        for source_module_path, target_module_path in group_mapping.items():
+            source_group = self.source_groups[source_module_path]
+            target_group = self.target_groups[target_module_path]
+            group_score = group_scores[source_module_path]
 
-                # Find candidate targets with matching shapes AND parameter type
-                candidates = []
+            # Map only common parameters (allows partial group matching)
+            # This handles cases where source has buffers that target doesn't have
+            common_param_types = source_group.param_types & target_group.param_types
+            for param_type in common_param_types:
+                source_param = source_group.params[param_type]
+                target_param = target_group.params[param_type]
 
-                # Get targets with exact shape match
-                if source_info.shape in self.target_by_shape:
-                    candidate_names = self.target_by_shape[source_info.shape]
+                mapping[source_param.name] = target_param.name
+                scores[source_param.name] = group_score
 
-                    for target_name in candidate_names:
-                        if target_name in used_targets:
-                            continue
+        # Fallback: Try to match remaining unmapped parameters individually
+        # This helps when groups are incompatible but individual parameters could still match
+        unmapped_source = set(self.source_params.keys()) - set(mapping.keys())
+        unmapped_target = set(self.target_params.keys()) - set(mapping.values())
 
-                        target_info = self.target_params[target_name]
+        if unmapped_source and unmapped_target:
+            individual_mapping, individual_scores = self._suggest_individual_mapping(
+                unmapped_source, unmapped_target, threshold, weights
+            )
+            mapping.update(individual_mapping)
+            scores.update(individual_scores)
 
-                        # CRITICAL: Only consider targets with matching parameter type
-                        if target_info.param_name != source_info.param_name:
-                            continue
-
-                        score = self._compute_composite_score(source_info, target_info, weights)
-
-                        if score >= threshold:
-                            candidates.append((target_name, score))
-
-                # Select best match
-                if candidates:
-                    # Sort by score (descending)
-                    candidates.sort(key=lambda x: x[1], reverse=True)
-                    best_target, best_score = candidates[0]
-
-                    mapping[source_name] = best_target
-                    scores[source_name] = best_score
-                    used_targets.add(best_target)
-
-        # Validate 1-to-1 mapping
+        # Validate mapping
         self._validate_mapping(mapping)
 
         # Store results
         self._mapping = mapping
         self._scores = scores
+        self._group_mapping = group_mapping
+        self._group_scores = group_scores
 
         return mapping
 
+    def _suggest_group_mapping(
+        self,
+        threshold: float,
+        weights: dict[str, float] | None = None,
+    ) -> tuple[dict[str, str], dict[str, float]]:
+        """Suggest mapping at the group level using hierarchical structure.
+
+        This method matches modules in a top-down manner, leveraging the hierarchical
+        structure to improve matching. Parent module mappings provide context for
+        matching child modules.
+
+        Args:
+            threshold: Minimum score threshold
+            weights: Custom weights for scoring
+
+        Returns:
+            Tuple of (group_mapping, group_scores) where:
+            - group_mapping: dict mapping source module paths to target module paths
+            - group_scores: dict mapping source module paths to their match scores
+        """
+        group_mapping = {}
+        group_scores = {}
+        hierarchy_context = {}
+        used_targets = set()
+
+        # Sort source groups by depth (shallow first) and then by path
+        # This ensures parent modules are matched before children
+        sorted_source_paths = sorted(self.source_groups.keys(), key=lambda x: (x.count("."), x))
+
+        for source_path in sorted_source_paths:
+            source_group = self.source_groups[source_path]
+
+            # Find candidate target groups
+            # With subset matching, we need to find groups that have at least some common types
+            # and matching shapes for those types
+            candidates = []
+            for target_path, target_group in self.target_groups.items():
+                if target_path in used_targets:
+                    continue
+
+                # Quick compatibility check (now allows subset matching)
+                if not source_group.is_compatible_with(target_group):
+                    continue
+
+                # Base similarity score
+                base_score = self._compute_group_similarity(source_group, target_group, weights)
+
+                if base_score < threshold:
+                    continue
+
+                # Hierarchical context score (used as tiebreaker, not blended into score)
+                context_score = self._compute_hierarchy_context_score(source_path, target_path, group_mapping)
+
+                # Store both scores for sorting
+                candidates.append((target_path, base_score, context_score))
+
+            # Select best match
+            if candidates:
+                # Sort by base score first, then context score as tiebreaker
+                # This prevents weak matches from being boosted by context
+                candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
+                best_target, best_score, context = candidates[0]
+
+                group_mapping[source_path] = best_target
+                group_scores[source_path] = best_score
+                hierarchy_context[source_path] = context
+                used_targets.add(best_target)
+
+        # Store hierarchy context for analysis
+        self._hierarchy_context = hierarchy_context
+
+        return group_mapping, group_scores
+
+    def _suggest_individual_mapping(
+        self,
+        unmapped_source: set[str],
+        unmapped_target: set[str],
+        threshold: float,
+        weights: dict[str, float] | None = None,
+    ) -> tuple[dict[str, str], dict[str, float]]:
+        """Suggest mapping for individual parameters that weren't matched at group level.
+
+        This fallback method tries to match remaining unmapped parameters individually,
+        which is useful when groups are incompatible but individual parameters could still match.
+
+        Args:
+            unmapped_source: Set of source parameter names not yet mapped
+            unmapped_target: Set of target parameter names not yet mapped
+            threshold: Minimum score threshold
+            weights: Custom weights for scoring
+
+        Returns:
+            Tuple of (mapping, scores) dictionaries
+        """
+        mapping = {}
+        scores = {}
+        used_targets = set()
+
+        # Sort source parameters by name for consistent ordering
+        sorted_source = sorted(unmapped_source)
+
+        for source_name in sorted_source:
+            source_info = self.source_params[source_name]
+
+            # Find candidates with matching shape
+            candidates = []
+            for target_name in unmapped_target:
+                if target_name in used_targets:
+                    continue
+
+                target_info = self.target_params[target_name]
+
+                # Compute individual parameter score
+                score = self._compute_composite_score(source_info, target_info, weights)
+
+                if score >= threshold:
+                    candidates.append((target_name, score))
+
+            # Select best match
+            if candidates:
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                best_target, best_score = candidates[0]
+
+                mapping[source_name] = best_target
+                scores[source_name] = best_score
+                used_targets.add(best_target)
+
+        return mapping, scores
+
     def _validate_mapping(self, mapping: dict[str, str]) -> None:
-        """Validate that the mapping is 1-to-1.
+        """Validate that the mapping is 1-to-1 and parameter types match.
 
         Args:
             mapping: The mapping dictionary to validate
 
         Raises:
-            ValueError: If mapping is not 1-to-1
+            ValueError: If mapping is not 1-to-1 or has parameter type mismatches
         """
         # Check for duplicate targets (should not happen with used_targets logic)
         target_counts = {}
@@ -665,12 +1121,18 @@ class WeightMapper:
         if duplicates:
             raise ValueError(f"Mapping is not 1-to-1. Duplicate targets: {duplicates}")
 
-        # Check for parameter type mismatches
+        # Validate parameter type matching (should always be true due to _compute_name_similarity)
+        # This is a sanity check to catch Any logic errors
         for source, target in mapping.items():
             source_type = self.source_params[source].param_name
             target_type = self.target_params[target].param_name
             if source_type != target_type:
-                raise ValueError(f"Parameter type mismatch: {source} ({source_type}) -> {target} ({target_type})")
+                msg = (
+                    f"INTERNAL ERROR: Parameter type mismatch in mapping. "
+                    f"This should not happen as _compute_name_similarity returns 0.0 for mismatched types. "
+                    f"Found: {source} ({source_type}) -> {target} ({target_type})"
+                )
+                raise RuntimeError(msg)
 
     def get_unmatched(self) -> dict[str, list[str]]:
         """Get parameters that couldn't be matched.
@@ -681,7 +1143,9 @@ class WeightMapper:
         if self._mapping is None:
             self.suggest_mapping()
 
-        assert self._mapping is not None  # Type narrowing for type checker
+        if self._mapping is None:
+            msg = "Mapping should not be None after suggest_mapping()"
+            raise RuntimeError(msg)
         matched_sources = set(self._mapping.keys())
         matched_targets = set(self._mapping.values())
 
@@ -703,28 +1167,29 @@ class WeightMapper:
         if self._mapping is None:
             self.suggest_mapping()
 
-        assert self._mapping is not None  # Type narrowing for type checker
-        assert self._scores is not None  # Type narrowing for type checker
+        if self._mapping is None or self._scores is None:
+            msg = "Mapping and scores should not be None after suggest_mapping()"
+            raise RuntimeError(msg)
 
-        print("=" * 80)
-        print("Weight Mapping Analysis")
-        print("=" * 80)
+        self.logger.info("=" * 80)
+        self.logger.info("Weight Mapping Analysis")
+        self.logger.info("=" * 80)
         source_name = self.source_module.__class__.__name__ if self.source_module else "State Dict"
-        print(f"\nSource: {source_name}")
-        print(f"  Total parameters: {len(self.source_params)}")
+        self.logger.info(f"\nSource: {source_name}")
+        self.logger.info(f"  Total parameters: {len(self.source_params)}")
 
         target_name = self.target_module.__class__.__name__ if self.target_module else "State Dict"
-        print(f"\nTarget: {target_name}")
-        print(f"  Total parameters: {len(self.target_params)}")
+        self.logger.info(f"\nTarget: {target_name}")
+        self.logger.info(f"  Total parameters: {len(self.target_params)}")
 
-        print("\nMatching results:")
-        print(f"  Matched: {len(self._mapping)}")
-        print(f"  Coverage: {len(self._mapping) / len(self.source_params) * 100:.1f}%")
+        self.logger.info("\nMatching results:")
+        self.logger.info(f"  Matched: {len(self._mapping)}")
+        self.logger.info(f"  Coverage: {len(self._mapping) / len(self.source_params) * 100:.1f}%")
 
         if self._mapping:
-            print(f"\n{'Top suggested mappings:':-^80}")
-            print(f"{'Source':<40} → {'Target':<30} {'Score':>8}")
-            print("-" * 80)
+            self.logger.info(f"\n{'Top suggested mappings:':-^80}")
+            self.logger.info(f"{'Source':<40} → {'Target':<30} {'Score':>8}")
+            self.logger.info("-" * 80)
 
             # Sort by score
             sorted_mappings = sorted(
@@ -741,32 +1206,32 @@ class WeightMapper:
                 source_display = source_name if len(source_name) <= 38 else source_name[:35] + "..."
                 target_display = target_name if len(target_name) <= 28 else target_name[:25] + "..."
 
-                print(f"{source_display:<40} → {target_display:<30} {score:>7.3f}")
-                print(f"  Shape: {source_shape}")
+                self.logger.info(f"{source_display:<40} → {target_display:<30} {score:>7.3f}")
+                self.logger.info(f"  Shape: {source_shape}")
 
             if len(sorted_mappings) > top_n:
-                print(f"  ... and {len(sorted_mappings) - top_n} more matches")
+                self.logger.info(f"  ... and {len(sorted_mappings) - top_n} more matches")
 
         if show_unmatched:
             unmatched = self.get_unmatched()
 
             if unmatched["source"]:
-                print(f"\n{'Unmatched source parameters:':-^80}")
+                self.logger.info(f"\n{'Unmatched source parameters:':-^80}")
                 for name in unmatched["source"][:10]:
                     shape = self.source_params[name].shape
-                    print(f"  {name:<60} {shape}")
+                    self.logger.info(f"  {name:<60} {shape}")
                 if len(unmatched["source"]) > 10:
-                    print(f"  ... and {len(unmatched['source']) - 10} more")
+                    self.logger.info(f"  ... and {len(unmatched['source']) - 10} more")
 
             if unmatched["target"]:
-                print(f"\n{'Unmatched target parameters:':-^80}")
+                self.logger.info(f"\n{'Unmatched target parameters:':-^80}")
                 for name in unmatched["target"][:10]:
                     shape = self.target_params[name].shape
-                    print(f"  {name:<60} {shape}")
+                    self.logger.info(f"  {name:<60} {shape}")
                 if len(unmatched["target"]) > 10:
-                    print(f"  ... and {len(unmatched['target']) - 10} more")
+                    self.logger.info(f"  ... and {len(unmatched['target']) - 10} more")
 
-        print("=" * 80)
+        self.logger.info("=" * 80)
 
     def get_mapping_dict(self) -> dict[str, str]:
         """Get the current mapping dictionary.
@@ -776,7 +1241,9 @@ class WeightMapper:
         """
         if self._mapping is None:
             self.suggest_mapping()
-        assert self._mapping is not None  # Type narrowing for type checker
+        if self._mapping is None:
+            msg = "Mapping should not be None after suggest_mapping()"
+            raise RuntimeError(msg)
         return self._mapping.copy()
 
     def get_mapping_with_scores(self) -> list[tuple[str, str, float]]:
@@ -788,10 +1255,47 @@ class WeightMapper:
         if self._mapping is None:
             self.suggest_mapping()
 
-        assert self._mapping is not None  # Type narrowing for type checker
-        assert self._scores is not None  # Type narrowing for type checker
+        if self._mapping is None or self._scores is None:
+            msg = "Mapping and scores should not be None after suggest_mapping()"
+            raise RuntimeError(msg)
 
         return [(source, target, self._scores[source]) for source, target in self._mapping.items()]
+
+    def get_mapping_with_transformations(self) -> list[tuple[str, str, float, dict[str, Any] | None]]:
+        """Get mapping with confidence scores and transformation information.
+
+        Returns:
+            List of tuples (source_name, target_name, score, transform_info) where
+            transform_info is None if no transformation needed, or a dict with:
+            - type: Type of transformation needed ('transpose', 'reshape', etc.)
+            - note: Human-readable description
+            - source_shape: Original shape
+            - target_shape: Target shape
+        """
+        if self._mapping is None:
+            self.suggest_mapping()
+
+        if self._mapping is None or self._scores is None:
+            msg = "Mapping and scores should not be None after suggest_mapping()"
+            raise RuntimeError(msg)
+
+        # Compute transformations if not already cached
+        if self._transformations is None:
+            self._transformations = {}
+            for source_name, target_name in self._mapping.items():
+                source_info = self.source_params[source_name]
+                target_info = self.target_params[target_name]
+                _, transform_info = self._compute_shape_score_with_transform(source_info, target_info)
+                if transform_info is not None:
+                    self._transformations[source_name] = transform_info
+
+        result = []
+        for source, target in self._mapping.items():
+            score = self._scores[source]
+            transform = self._transformations.get(source, None)
+            result.append((source, target, score, transform))
+
+        return result
 
     def export_mapping_report(self, output_path: str | Path) -> None:
         """Export detailed mapping report to a file.
@@ -804,8 +1308,9 @@ class WeightMapper:
         if self._mapping is None:
             self.suggest_mapping()
 
-        assert self._mapping is not None  # Type narrowing for type checker
-        assert self._scores is not None  # Type narrowing for type checker
+        if self._mapping is None or self._scores is None:
+            msg = "Mapping and scores should not be None after suggest_mapping()"
+            raise RuntimeError(msg)
 
         unmatched = self.get_unmatched()
 
@@ -835,4 +1340,4 @@ class WeightMapper:
         with output_path.open("w") as f:
             json.dump(report, f, indent=2)
 
-        print(f"Mapping report saved to: {output_path}")
+        self.logger.info(f"Mapping report saved to: {output_path}")
