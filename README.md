@@ -6,10 +6,10 @@
 [![PyPI - Package Version](https://img.shields.io/pypi/v/lit-wsl?logo=pypi&style=flat&color=orange)](https://pypi.org/project/lit-wsl/)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/lit-wsl?logo=pypi&style=flat&color=blue)](https://pypi.org/project/lit-wsl/)
 [![Docs with MkDocs](https://img.shields.io/badge/MkDocs-docs?style=flat&logo=materialformkdocs&logoColor=white&color=%23526CFE)](https://squidfunk.github.io/mkdocs-material/)
-[![Poetry](https://img.shields.io/endpoint?url=https://python-poetry.org/badge/v0.json)](https://python-poetry.org/)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![linting: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](.pre-commit-config.yaml)
-[![Checked with pyright](https://microsoft.github.io/pyright/img/pyright_badge.svg)](https://microsoft.github.io/pyright/)
+[![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
+[![prek](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/j178/prek/master/docs/assets/badge-v0.json)](https://github.com/j178/prek)
 [![security: bandit](https://img.shields.io/badge/security-bandit-yellow.svg)](https://github.com/PyCQA/bandit)
 [![Semantic Versions](https://img.shields.io/badge/%20%20%F0%9F%93%A6%F0%9F%9A%80-semantic--versions-e10079.svg)](https://github.com/twsl/lit-wsl/releases)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-border.json)](https://github.com/copier-org/copier)
@@ -32,10 +32,10 @@ With `pip`:
 python -m pip install lit-wsl
 ```
 
-With [`poetry`](https://python-poetry.org/):
+With [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
-poetry add lit-wsl
+uv add lit-wsl
 ```
 
 ## How to use it
@@ -49,7 +49,7 @@ import lit_wsl
 ## Docs
 
 ```bash
-poetry run mkdocs build -f ./docs/mkdocs.yml -d ./_build/
+uv run mkdocs build -f ./mkdocs.yml -d ./_build/
 ```
 
 ## Update template
@@ -60,4 +60,4 @@ copier update --trust -A --vcs-ref=HEAD
 
 ## Credits
 
-This project was generated with [![🚀 A generic python project template.](https://img.shields.io/badge/python--project--template-%F0%9F%9A%80-brightgreen)](https://github.com/twsl/python-project-template)
+This project was generated with [![🚀 python project template.](https://img.shields.io/badge/python--project--template-%F0%9F%9A%80-brightgreen)](https://github.com/twsl/python-project-template)

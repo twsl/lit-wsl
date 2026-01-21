@@ -10,6 +10,12 @@
             "VARIANT": "3.11-bookworm"
         }
     },
+    "remoteEnv": {
+        "UV_SYSTEM_PYTHON": "1",
+        "UV_PROJECT_ENVIRONMENT": "/usr/local",
+        // Disable dynamic versioning during development
+        "UV_DYNAMIC_VERSIONING_BYPASS": "1.0.0"
+    },
     // Features to add to the dev container. More info: https://containers.dev/features.
     "features": {
         "ghcr.io/devcontainers/features/git:1": {},
@@ -24,7 +30,8 @@
     // Use 'forwardPorts' to make a list of ports inside the container available locally.
     // "forwardPorts": [],
     // Use 'postCreateCommand' to run commands after the container is created.
-    "postCreateCommand": "poetry install && prek install",
+    "postCreateCommand": "uv sync --all-groups --all-extras",
+    "postStartCommand": "uv tool install prek && prek install",
     // Configure tool-specific properties.
     "customizations": {
         // Configure properties specific to VS Code.
@@ -41,7 +48,7 @@
                 "python.pythonPath": "/usr/local/bin/python",
                 "python.envFile": "${workspaceFolder}/.env",
                 "python.defaultInterpreterPath": "/usr/local/bin/python",
-                "python.languageServer": "Pylance",
+                "python.languageServer": "None",
                 "python.autoComplete.addBrackets": true,
                 "python.analysis.autoImportCompletions": true,
                 "python.analysis.completeFunctionParens": true,
@@ -50,7 +57,6 @@
                 "python.analysis.inlayHints.variableTypes": true,
                 "python.analysis.inlayHints.functionReturnTypes": true,
                 "python.analysis.diagnosticMode": "workspace",
-                "python.analysis.typeCheckingMode": "strict",
                 "python.sortImports": true,
                 "python.testing.autoTestDiscoverOnSaveEnabled": false,
                 "python.testing.unittestEnabled": false,
@@ -74,8 +80,6 @@
                     "notebook.source.fixAll": "explicit",
                     "notebook.source.organizeImports": "explicit"
                 },
-                "testExplorer.codeLens": true,
-                "testExplorer.gutterDecoration": true,
                 "git.enableSmartCommit": true,
                 "git.autofetch": true,
                 "autoDocstring.docstringFormat": "google-notypes",
@@ -90,7 +94,7 @@
             // Add the IDs of extensions you want installed when the container is created.
             "extensions": [
                 "ms-python.python",
-                "ms-python.vscode-pylance",
+                "astral-sh.ty",
                 "ms-toolsai.jupyter",
                 "GitHub.copilot",
                 "GitHub.copilot-chat",
@@ -109,6 +113,7 @@
                 "njpwerner.autodocstring",
                 "rodolphebarbanneau.python-docstring-highlighter",
                 "mechatroner.rainbow-csv",
+                "oderwat.indent-rainbow",
                 "uctakeoff.vscode-counter",
                 "bierner.github-markdown-preview",
                 "yahyabatulu.vscode-markdown-alert",

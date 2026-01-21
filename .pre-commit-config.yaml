@@ -15,11 +15,10 @@ repos:
     hooks:
       - id: pre-commit-update
 
-  - repo: https://github.com/python-poetry/poetry
-    rev: 2.2.1
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.9.25
     hooks:
-      - id: poetry-lock
-      - id: poetry-check
+      - id: uv-lock
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -64,14 +63,10 @@ repos:
         args: [--fix, -v]
       - id: ruff-format
 
-  - repo: https://github.com/RobertCraigie/pyright-python
-    rev: v1.1.408
+  - repo: https://github.com/allganize/ty-pre-commit
+    rev: v0.0.12
     hooks:
-      - id: pyright
-        args: [--verbose, --project=.]
-        entry: poetry run pyright
-        language: system
-        types: [python]
+      - id: ty-check
 
   - repo: https://github.com/jendrikseipp/vulture
     rev: v2.14
