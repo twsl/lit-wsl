@@ -68,7 +68,7 @@ jobs:
 
       - name: Run tests
         run: |
-          poetry run pytest -c pyproject.toml \
+          uv run pytest -c pyproject.toml \
           --cov-config=pyproject.toml \
           --cov-report=html \
           --cov-report=xml:coverage-${{ runner.os }}-${{ matrix.python-version }}.xml \
