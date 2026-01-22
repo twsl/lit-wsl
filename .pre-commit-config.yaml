@@ -16,7 +16,7 @@ repos:
       - id: pre-commit-update
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.9.25
+    rev: 0.9.26
     hooks:
       - id: uv-lock
 
@@ -52,7 +52,7 @@ repos:
         additional_dependencies: ["bandit[toml]"]
 
   - repo: https://github.com/kynan/nbstripout
-    rev: 0.8.2
+    rev: 0.9.0
     hooks:
       - id: nbstripout
 
@@ -64,7 +64,7 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/allganize/ty-pre-commit
-    rev: v0.0.12
+    rev: v0.0.13
     hooks:
       - id: ty-check
 

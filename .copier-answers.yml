@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
-_commit: v0.4.0-3-g94dba7a
+_commit: v0.4.0-12-g236f59e
 _src_path: git+https://github.com/twsl/python-project-template
 author_email: 45483159+twsl@users.noreply.github.com
 author_username: twsl
@@ -10,10 +10,10 @@ copyright_license: MIT
 copyright_year: 2025
 custom_install: true
 github_runner:
-  - ubuntu-latest
+- ubuntu-latest
 github_runner_clean: true
 github_runner_python_version:
-  - "3.11"
+- '3.11'
 include_databricks: false
 include_docs: true
 include_notebooks: true
@@ -27,7 +27,7 @@ project_name: lit-wsl
 python_package_command_line_name: lit-wsl
 python_package_distribution_name: lit-wsl
 python_package_import_name: lit_wsl
-python_version: "3.11"
+python_version: '3.11'
 repository_name: lit-wsl
 repository_namespace: twsl
 repository_provider: github.com

@@ -5,11 +5,6 @@
 version: 2
 
 updates:
-  - package-ecosystem: gitsubmodule
-    directory: /
-    schedule:
-      interval: weekly
-
   - package-ecosystem: devcontainers
     directory: /
     schedule:
@@ -30,4 +25,3 @@ updates:
     allow:
       - dependency-type: production
       - dependency-type: development
-    
