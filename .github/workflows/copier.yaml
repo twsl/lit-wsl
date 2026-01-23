@@ -47,6 +47,10 @@ jobs:
       - name: Build dependencies
         run: uv build
 
+      - name: Git Status
+        id: git-status
+        run: git status
+
       - name: Run copier update
         id: run-update
         run: uv run copier update --trust -A --vcs-ref=HEAD
