@@ -11,6 +11,7 @@ concurrency:
 
 env:
   python-version: "3.11"
+  UV_DYNAMIC_VERSIONING_BYPASS: "1.0.0"
 
 jobs:
   copier-update:
