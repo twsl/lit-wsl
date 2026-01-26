@@ -1224,7 +1224,7 @@ debug = [
 ]
 dev = [
     { name = "bandit", specifier = ">=1.9.3" },
-    { name = "copier", specifier = ">=9.11.2" },
+    { name = "copier", specifier = ">=9.11.3" },
     { name = "ipykernel", specifier = ">=6.31.0" },
     { name = "ipython", specifier = ">=9.9.0" },
     { name = "ipywidgets", specifier = ">=8.1.8" },
@@ -1245,7 +1245,7 @@ docs = [
     { name = "mkdocs-jupyter", specifier = ">=0.25.1" },
     { name = "mkdocs-material", specifier = ">=9.7.1" },
     { name = "pygments", specifier = ">=2.19.0" },
-    { name = "pymdown-extensions", specifier = ">=10.20" },
+    { name = "pymdown-extensions", specifier = ">=10.20.1" },
 ]
 test = [
     { name = "pytest", specifier = ">=9.0.2" },
