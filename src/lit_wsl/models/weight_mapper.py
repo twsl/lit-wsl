@@ -891,9 +891,10 @@ class WeightMapper:
         num_params = len(source_group.param_types)
 
         for param_type in source_group.param_types:
-            source_info = source_group.params[param_type]
-            target_info = target_group.params[param_type]
-            total_score += self._compute_composite_score(source_info, target_info, weights)
+            source_info = source_group.params.get(param_type)
+            target_info = target_group.params.get(param_type)
+            if source_info is not None and target_info is not None:
+                total_score += self._compute_composite_score(source_info, target_info, weights)
 
         return total_score / num_params if num_params > 0 else 0.0
 
