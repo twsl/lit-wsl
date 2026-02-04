@@ -78,13 +78,11 @@ score = 0.5 * shape_score + 0.3 * name_score + 0.2 * hierarchy_score
 Where:
 
 - **Shape Score** (0.0-1.0):
-
   - 1.0 for exact match
   - 0.7 for transposed shapes (e.g., different Conv implementations)
   - 0.0 for different shapes
 
 - **Name Score** (0.0-1.0):
-
   - Token overlap (Jaccard similarity)
   - Edit distance (Levenshtein)
   - Longest common substring
@@ -358,7 +356,8 @@ WeightMapper(
     source_module: nn.Module | None = None,
     target_module: nn.Module | None = None,
     shape_tolerance: float = 0.0,
-    dummy_input: torch.Tensor | None = None
+    dummy_input: torch.Tensor | None = None,
+    incompatible_pairs: list[tuple[set[str], set[str]]] | None = None
 )
 ```
 
@@ -368,6 +367,7 @@ WeightMapper(
 - `target_module`: The target model (to adapt weights to)
 - `shape_tolerance`: Relative tolerance for shape matching (default: 0.0 = exact match only)
 - `dummy_input`: (Optional) Dummy input tensor for execution order tracking. Improves matching by ~2% on average. Not required.
+- `incompatible_pairs`: (Optional) List of incompatible component pairs for semantic matching. Each pair is a tuple of two sets of semantic chunks. For example: `[({{"backbone"}}, {{"head"}})]` prevents backbone modules from matching with head modules. If `None`, uses default pairs that prevent common cross-component matches (e.g., backbone vs head, encoder vs decoder). Pass an empty list `[]` to disable all incompatibility checks.
 
 ##### `from_state_dict()` (Recommended)
 
@@ -377,7 +377,8 @@ WeightMapper.from_state_dict(
     source_state_dict: dict[str, torch.Tensor],
     target_module: nn.Module,
     shape_tolerance: float = 0.0,
-    dummy_input: torch.Tensor | None = None
+    dummy_input: torch.Tensor | None = None,
+    incompatible_pairs: list[tuple[set[str], set[str]]] | None = None
 ) -> WeightMapper
 ```
 
@@ -389,6 +390,7 @@ Create a WeightMapper from a source state dictionary and target module.
 - `target_module`: The target model to adapt weights to
 - `shape_tolerance`: Relative tolerance for shape matching (default: 0.0)
 - `dummy_input`: (Optional) Dummy input tensor for execution order tracking
+- `incompatible_pairs`: (Optional) List of incompatible component pairs. If None, no restrictions. See `__init__()` for details.
 
 **Returns:** WeightMapper instance
 
@@ -512,9 +514,93 @@ export_mapping_report(output_path: str | Path) -> None
 
 Export detailed mapping report to a JSON file.
 
+## Customizing Incompatible Component Pairs
+
+The WeightMapper allows you to optionally define incompatible component pairs to prevent clearly incorrect cross-component matches (e.g., preventing backbone modules from matching with head modules).
+
+### Default Behavior
+
+By default, the mapper applies **no cross-component restrictions**:
+
+```python
+mapper = WeightMapper(source_model, target_model)
+# Allows: backbone.conv1 → head.conv1 (if shapes and names match)
+# Allows: encoder.layer1 → decoder.layer1 (if shapes and names match)
+# All matches are evaluated purely on shape, name similarity, and hierarchy
+```
+
+### Adding Incompatibility Restrictions
+
+Define your own incompatible pairs for domain-specific architectures:
+
+```python
+# Example: NLP model with custom components
+custom_pairs = [
+    ({"encoder", "embedding"}, {"decoder", "output"}),
+    ({"attention"}, {"feedforward", "mlp"}),
+]
+
+mapper = WeightMapper(
+    source_model,
+    target_model,
+    incompatible_pairs=custom_pairs
+)
+```
+
+**How it works:**
+
+- Each pair is a tuple of two sets of semantic chunks
+- Module names are split into chunks (e.g., "yolo_backbone" → {"yolo", "backbone"})
+- If a module contains chunks from one set and another module contains chunks from the other set, they won't match
+- Checks are symmetric (A→B == B→A)
+
+### Example Use Cases
+
+**Vision Models (Prevent Backbone-Head Confusion):**
+
+```python
+# Explicitly prevent backbone from matching with head components
+vision_pairs = [
+    ({"backbone", "encoder", "feature"}, {"head", "classifier", "decoder"}),
+    ({"backbone", "encoder"}, {"neck", "fpn"}),
+]
+mapper = WeightMapper(resnet_model, vit_model, incompatible_pairs=vision_pairs)
+```
+
+**Vision Transformers:**
+
+```python
+vit_pairs = [
+    ({"patch", "embedding"}, {"head", "classifier"}),
+    ({"encoder", "transformer"}, {"decoder", "mlp_head"}),
+]
+mapper = WeightMapper(vit_model, target_model, incompatible_pairs=vit_pairs)
+```
+
+**Detection Models:**
+
+```python
+detection_pairs = [
+    ({"backbone", "resnet", "vgg"}, {"rpn", "head", "neck"}),
+    ({"fpn", "pafpn"}, {"roi", "head"}),
+]
+mapper = WeightMapper(yolo_v5, yolo_v8, incompatible_pairs=detection_pairs)
+```
+
+**Default (No Restrictions):**
+
+```python
+# For models with custom naming or when you want maximum flexibility
+mapper = WeightMapper(
+    old_model,
+    new_model
+    # incompatible_pairs not specified - no restrictions applied
+)
+```
+
 ## Best Practices
 
-1. **Review Results**: Always call `print_analysis()` to review the suggested mappings before using them.
+1. **Review Results**: Always call `print_analysis()` or `visualize_mapping()` to review the suggested mappings before using them.
 
 2. **Check Coverage**: Low coverage might indicate significant architectural differences. Investigate unmatched parameters.
 
@@ -538,6 +624,77 @@ Export detailed mapping report to a JSON file.
    except Exception as e:
        print(f"✗ Error loading weights: {e}")
    ```
+
+## Visualization Features
+
+The WeightMapper includes powerful Rich-based visualization tools for exploring model hierarchies and analyzing mapping results with beautiful, color-coded output.
+
+### Visualizing Mapping Results
+
+Display mapping results with color-coded confidence scores, transformation indicators, and statistics:
+
+```python
+from lit_wsl.mapper.weight_mapper import WeightMapper
+
+# Create mapper and suggest mapping
+mapper = WeightMapper.from_state_dict(checkpoint, new_model)
+result = mapper.suggest_mapping(threshold=0.6)
+
+# Visualize with Rich formatting
+mapper.visualize_mapping(
+    result=result,
+    show_unmatched=True,
+    max_matches=30,  # Show top 30 matches
+    max_unmatched=15  # Show up to 15 unmatched items
+)
+```
+
+Output includes:
+
+- **Summary Panel**: Coverage, match counts, threshold info
+- **Mapping Table**: Source → Target mappings with:
+  - Color-coded scores (green >0.8, yellow 0.6-0.8, red <0.6)
+  - Transformation indicators (✓ exact, 🔄 transpose, 📐 reshape)
+  - Match type badges (GROUP or INDIV)
+  - Parameter shapes
+- **Unmatched Parameters**: Lists of unmatched source and target parameters
+
+### Visualizing Model Hierarchies
+
+Explore the hierarchical structure of models with side-by-side tree views:
+
+```python
+# Show both model hierarchies side by side
+mapper.visualize_hierarchies(max_depth=5)
+
+# Highlight matched modules after mapping
+mapper.suggest_mapping()
+mapper.visualize_hierarchies(show_matches=True, max_depth=5)
+```
+
+Features:
+
+- **Tree Structure**: Nested view of all modules
+- **Parameter Badges**: W (weight), B (bias) indicators
+- **Shape Information**: Parameter shapes shown inline
+- **Match Highlighting**: Matched modules shown in green with ✓
+- **Depth Limiting**: Control tree depth for readability
+
+### Visualizing Score Breakdowns
+
+Inspect detailed scoring for specific parameters:
+
+```python
+# Show detailed score breakdown for a parameter
+mapper.visualize_score_breakdown("backbone.conv1.weight")
+```
+
+Displays:
+
+- Component scores (shape, name, hierarchy)
+- Sub-scores (token, edit distance, LCS, depth, path, order)
+- Weight contributions
+- Visual progress bars
 
 ## Limitations
 
@@ -625,7 +782,6 @@ def _extract_parameter_groups(self, params: dict[str, ParameterInfo]) -> dict[st
 The `suggest_mapping()` method operates in two stages:
 
 1. **Group Matching** - Matches entire parameter groups based on:
-
    - Compatible parameter types (same set of param names)
    - Compatible shapes for all parameters
    - Similarity scores averaged across all group parameters

@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 from torch import Tensor, nn
 
-from lit_wsl.models.weight_mapper import WeightMapper
+from lit_wsl.mapper.weight_mapper import WeightMapper
 from lit_wsl.models.weight_renamer import WeightRenamer
 
 
@@ -31,8 +31,11 @@ def test_complete_weight_mapping_workflow(
     new_model.eval()
 
     # 4. Use WeightMapper to discover mapping
-    mapper = WeightMapper.from_checkpoint(checkpoint_path, new_model)
-    mapping = mapper.suggest_mapping(threshold=0.5)
+    checkpoint = torch.load(checkpoint_path)
+    mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], new_model)
+    result = mapper.suggest_mapping(threshold=0.5)
+    mapping = result.get_mapping()
+    unmatched = result.get_unmatched()
 
     # Verify we found a good mapping
     assert len(mapping) > 0
@@ -108,8 +111,11 @@ def test_weight_mapping_with_identical_architectures(tmp_path: Path, simple_mode
     target_model.eval()
 
     # 4. Use WeightMapper to discover mapping
-    mapper = WeightMapper.from_checkpoint(checkpoint_path, target_model)
-    mapping = mapper.suggest_mapping()
+    checkpoint = torch.load(checkpoint_path)
+    mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model)
+    result = mapper.suggest_mapping()
+    mapping = result.get_mapping()
+    unmatched = result.get_unmatched()
 
     # With identical architectures, all parameters and buffers should map
     # Note: state_dict has 18 entries (12 params + 6 buffers)
@@ -168,8 +174,11 @@ def test_partial_weight_mapping(tmp_path: Path, simple_model_class: nn.Module, r
     target_model.eval()
 
     # 4. Use WeightMapper to find compatible layers
-    mapper = WeightMapper.from_checkpoint(checkpoint_path, target_model)
-    mapping = mapper.suggest_mapping(threshold=0.5)
+    checkpoint = torch.load(checkpoint_path)
+    mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model)
+    result = mapper.suggest_mapping(threshold=0.5)
+    mapping = result.get_mapping()
+    unmatched_from_suggest = result.get_unmatched()
 
     # Should find some compatible layers
     assert len(mapping) > 0
@@ -224,7 +233,9 @@ def test_mapping_analysis_and_export(
 
     # 2. Create mapper
     mapper = WeightMapper(source_model, target_model)
-    mapping = mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
+    mapping = result.get_mapping()
+    unmatched = result.get_unmatched()
     assert len(mapping) > 0  # Should find mappings
 
     # 3. Print analysis
@@ -233,11 +244,13 @@ def test_mapping_analysis_and_export(
     print("=" * 80)
 
     # 4. Get mapping with scores
-    mappings_with_scores = mapper.get_mapping_with_scores()
+    mappings_with_scores = result.get_mapping_with_scores()
+    unmatched_with_scores = result.get_unmatched()
     assert len(mappings_with_scores) > 0
 
-    # Each item should be (source_name, target_name, score)
-    for source_name, target_name, score in mappings_with_scores[:3]:
+    # Each item should be a dict entry with (target_name, score)
+    for source_name, target_score_tuple in list(mappings_with_scores.items())[:3]:
+        target_name, score = target_score_tuple
         print(f"{source_name} → {target_name} (score: {score:.3f})")
         assert 0.0 <= score <= 1.0
 
@@ -280,15 +293,22 @@ def test_execution_order_impact_on_workflow(
     dummy_input = torch.randn(2, 3, 32, 32)
 
     # 4. Compare mappings with and without execution order
-    mapper_no_order = WeightMapper.from_checkpoint(checkpoint_path, target_model)
-    mapper_with_order = WeightMapper.from_checkpoint(checkpoint_path, target_model, dummy_input=dummy_input)
+    checkpoint = torch.load(checkpoint_path)
+    mapper_no_order = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model)
+    mapper_with_order = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model, dummy_input=dummy_input)
 
-    mapping_no_order = mapper_no_order.suggest_mapping(threshold=0.5)
-    mapping_with_order = mapper_with_order.suggest_mapping(threshold=0.5)
+    result_no_order = mapper_no_order.suggest_mapping(threshold=0.5)
+    mapping_no_order = result_no_order.get_mapping()
+    unmatched_no_order = result_no_order.get_unmatched()
+    result_with_order = mapper_with_order.suggest_mapping(threshold=0.5)
+    mapping_with_order = result_with_order.get_mapping()
+    unmatched_with_order = result_with_order.get_unmatched()
 
     # 5. Get scores for comparison
-    scores_no_order = {src: score for src, _, score in mapper_no_order.get_mapping_with_scores()}
-    scores_with_order = {src: score for src, _, score in mapper_with_order.get_mapping_with_scores()}
+    scores_no_order_dict = result_no_order.get_mapping_with_scores()
+    scores_no_order = {src: float(score) for src, (_, score) in scores_no_order_dict.items()}
+    scores_with_order_dict = result_with_order.get_mapping_with_scores()
+    scores_with_order = {src: float(score) for src, (_, score) in scores_with_order_dict.items()}
 
     print(f"\n{'Execution Order Impact Analysis':-^80}")
     print(f"Mappings found (no order): {len(mapping_no_order)}")
@@ -322,8 +342,9 @@ def test_execution_order_impact_on_workflow(
         assert improved + same >= worse, "Execution order should improve or maintain matching quality"
 
     # 6. Verify both mappings are valid (1-to-1, type-consistent)
-    for mapping in [mapping_no_order, mapping_with_order]:
-        for source_name, target_name in mapping.items():
+    for mapping_dict in [mapping_no_order, mapping_with_order]:
+        for source_name, target_name in mapping_dict.items():
+            assert isinstance(target_name, str)  # Type guard
             source_type = source_name.split(".")[-1]
             target_type = target_name.split(".")[-1]
             assert source_type == target_type, f"Type mismatch: {source_name} -> {target_name}"

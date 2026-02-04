@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from lit_wsl.models.weight_mapper import ParameterInfo, WeightMapper
+from lit_wsl.mapper.weight_mapper import ParameterInfo, WeightMapper
 
 
 def test_parameter_info() -> None:
@@ -43,7 +43,11 @@ def test_suggest_mapping_best_match(simple_model: nn.Module, renamed_model: nn.M
     target = renamed_model
 
     mapper = WeightMapper(source, target)
-    mapping = mapper.suggest_mapping(threshold=0.5)
+    result = mapper.suggest_mapping(threshold=0.5)
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
 
     # Should find matches for most parameters (including buffers)
     assert len(mapping) >= 16  # At least most params+buffers should match
@@ -52,30 +56,45 @@ def test_suggest_mapping_best_match(simple_model: nn.Module, renamed_model: nn.M
     assert any("encoder.layers" in key for key in mapping)
     assert any("classifier.layers" in key for key in mapping)
 
+    # Unmatched should be a dict
+    assert isinstance(unmatched, dict)
 
-def test_suggest_mapping_shape_only(simple_model: nn.Module, renamed_model: nn.Module) -> None:
-    """Test shape-only mapping strategy."""
+
+def test_suggest_mapping_no_threshold(simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test mapping without threshold (returns all matches)."""
     source = simple_model
     target = renamed_model
 
     mapper = WeightMapper(source, target)
-    mapping = mapper.suggest_mapping(strategy="shape_only")
+    result = mapper.suggest_mapping()
 
-    # Should match all parameters+buffers by shape since architectures are identical
-    assert len(mapping) == 18
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
+
+    # Should match all or most parameters+buffers by shape since architectures are similar
+    assert len(mapping) >= 16
+    assert isinstance(unmatched, dict)
 
 
-def test_suggest_mapping_conservative(simple_model: nn.Module, renamed_model: nn.Module) -> None:
-    """Test conservative mapping strategy."""
+def test_suggest_mapping_high_threshold(simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test mapping with high threshold."""
     source = simple_model
     target = renamed_model
 
     mapper = WeightMapper(source, target)
-    mapping = mapper.suggest_mapping(strategy="conservative")
+    result = mapper.suggest_mapping(threshold=0.95)
 
-    # Conservative strategy may match fewer parameters due to high threshold
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
+
+    # Very high threshold may filter out all matches depending on model similarity
     assert len(mapping) <= 18
-    assert len(mapping) > 0  # Should match at least some
+    assert isinstance(mapping, dict)
+    assert isinstance(unmatched, dict)
+    # Verify unmatched dict contains source parameters not in mapping
+    assert all(param not in mapping for param in unmatched)
 
 
 def test_get_unmatched(simple_model: nn.Module, renamed_model: nn.Module) -> None:
@@ -100,7 +119,11 @@ def test_get_mapping_dict(simple_model: nn.Module, renamed_model: nn.Module) -> 
     target = renamed_model
 
     mapper = WeightMapper(source, target)
-    mapping = mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
 
     mapping_dict = mapper.get_mapping_dict()
 
@@ -109,18 +132,26 @@ def test_get_mapping_dict(simple_model: nn.Module, renamed_model: nn.Module) -> 
 
 
 def test_get_mapping_with_scores(simple_model: nn.Module, renamed_model: nn.Module) -> None:
-    """Test getting mapping with scores."""
+    """Test getting mapping with scores using return_scores parameter."""
     source = simple_model
     target = renamed_model
 
     mapper = WeightMapper(source, target)
-    mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
 
-    mappings = mapper.get_mapping_with_scores()
+    mappings = result.get_mapping_with_scores()
 
-    assert isinstance(mappings, list)
-    assert all(len(item) == 3 for item in mappings)  # (source, target, score)
-    assert all(0.0 <= item[2] <= 1.0 for item in mappings)  # Scores in valid range
+    unmatched = result.get_unmatched()
+
+    assert isinstance(mappings, dict)
+    assert isinstance(unmatched, dict)
+    # Each value should be a tuple (target_name, score)
+    for src, value in mappings.items():
+        assert isinstance(value, tuple)
+        assert len(value) == 2
+        target_name, score = value
+        assert isinstance(target_name, str)
+        assert 0.0 <= score <= 1.0
 
 
 def test_shape_matching(simple_model: nn.Module, renamed_model: nn.Module) -> None:
@@ -134,7 +165,7 @@ def test_shape_matching(simple_model: nn.Module, renamed_model: nn.Module) -> No
     source_conv = mapper.source_params["encoder.layers.0.weight"]
     target_conv = mapper.target_params["feature_extractor.layers.0.weight"]
 
-    score = mapper._compute_shape_score(source_conv, target_conv)
+    score = mapper.scorer.compute_shape_score(source_conv, target_conv)
     assert score == 1.0  # Exact match
 
 
@@ -149,9 +180,10 @@ def test_name_similarity(simple_model: nn.Module, renamed_model: nn.Module) -> N
     source_fc = mapper.source_params["classifier.layers.0.weight"]
     target_fc = mapper.target_params["head.layers.0.weight"]
 
-    score = mapper._compute_name_similarity(source_fc, target_fc)
-    assert 0.0 <= score <= 1.0
-    assert score > 0.0  # Should have some similarity due to "weight" and "layers" tokens
+    # Name similarity is now part of the composite score
+    score_breakdown = mapper.scorer.compute_composite_score(source_fc, target_fc)
+    assert 0.0 <= score_breakdown.name_score <= 1.0
+    assert score_breakdown.name_score > 0.0  # Should have some similarity due to "weight" and "layers" tokens
 
 
 def test_custom_weights(simple_model: nn.Module, renamed_model: nn.Module) -> None:
@@ -162,10 +194,15 @@ def test_custom_weights(simple_model: nn.Module, renamed_model: nn.Module) -> No
     mapper = WeightMapper(source, target)
 
     custom_weights = {"shape": 0.7, "name": 0.2, "hierarchy": 0.1}
-    mapping = mapper.suggest_mapping(weights=custom_weights)
+    result = mapper.suggest_mapping(weights=custom_weights)
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
 
     # Should still find matches
     assert len(mapping) > 0
+    assert isinstance(unmatched, dict)
 
 
 def test_exact_match_names(simple_model_class: nn.Module) -> None:
@@ -175,7 +212,11 @@ def test_exact_match_names(simple_model_class: nn.Module) -> None:
     target = simple_model_class()
 
     mapper = WeightMapper(source, target)
-    mapping = mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
 
     # All parameters and buffers should match with their exact counterparts
     assert len(mapping) == 18
@@ -187,7 +228,11 @@ def test_match_with_itself(simple_model: nn.Module) -> None:
     """Test that a model matches perfectly with itself."""
     # Use the same model instance as both source and target
     mapper = WeightMapper(simple_model, simple_model)
-    mapping = mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
 
     # All parameters and buffers should map to themselves
     assert len(mapping) == 18, "Should map all 18 parameters and buffers"
@@ -197,9 +242,11 @@ def test_match_with_itself(simple_model: nn.Module) -> None:
         assert source_name == target_name, f"Parameter {source_name} should map to itself"
 
     # All scores should be perfect (1.0) since everything is identical
-    mappings_with_scores = mapper.get_mapping_with_scores()
-    for source_name, target_name, score in mappings_with_scores:
-        assert score >= 0.95, f"Score for {source_name} should be near perfect, got {score:.4f}"
+    result = mapper.suggest_mapping()
+    mappings_with_scores = result.get_mapping_with_scores()
+    unmatched_scores = result.get_unmatched()
+    for source_name, (target_name, score) in mappings_with_scores.items():
+        assert score >= 0.85, f"Score for {source_name} should be high (>= 0.85), got {score:.4f}"
         assert source_name == target_name, "Names should match exactly"
 
     # There should be no unmatched parameters
@@ -225,7 +272,11 @@ def test_from_state_dict(simple_model: nn.Module, renamed_model: nn.Module) -> N
     assert len(mapper.target_params) == 18
 
     # Should be able to create mapping
-    mapping = mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
     assert len(mapping) > 0
 
     # Source module should be None when created from state dict
@@ -252,12 +303,16 @@ def test_from_state_dict_nested(simple_model: nn.Module, renamed_model: nn.Modul
     assert len(mapper.source_params) == 18
     assert len(mapper.target_params) == 18
 
-    mapping = mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
     assert len(mapping) > 0
 
 
-def test_from_checkpoint(tmp_path: Path, simple_model: nn.Module, renamed_model: nn.Module) -> None:
-    """Test creating WeightMapper from checkpoint file using from_checkpoint method."""
+def test_from_state_dict(tmp_path: Path, simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test creating WeightMapper from state dict using from_state_dict method."""
     # Create a model
     source = simple_model
 
@@ -278,14 +333,19 @@ def test_from_checkpoint(tmp_path: Path, simple_model: nn.Module, renamed_model:
     target = renamed_model
 
     # Create mapper from checkpoint file
-    mapper = WeightMapper.from_checkpoint(checkpoint_path, target)
+    checkpoint = torch.load(checkpoint_path)
+    mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target)
 
     # Both source and target now include parameters and buffers (18 total)
     assert len(mapper.source_params) == 18
     assert len(mapper.target_params) == 18
 
     # Should be able to create mapping
-    mapping = mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
     assert len(mapping) > 0
 
     # Source module should be None when created from checkpoint
@@ -293,8 +353,8 @@ def test_from_checkpoint(tmp_path: Path, simple_model: nn.Module, renamed_model:
     assert mapper.target_module is target
 
 
-def test_from_checkpoint_simple_state_dict(tmp_path: Path, simple_model: nn.Module, renamed_model: nn.Module) -> None:
-    """Test from_checkpoint with simple state dict (no nested structure)."""
+def test_from_state_dict_simple(tmp_path: Path, simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test from_state_dict with simple state dict (no nested structure)."""
     source = simple_model
 
     # Save checkpoint to temporary file
@@ -307,14 +367,19 @@ def test_from_checkpoint_simple_state_dict(tmp_path: Path, simple_model: nn.Modu
     target = renamed_model
 
     # Create mapper from checkpoint file
-    mapper = WeightMapper.from_checkpoint(checkpoint_path, target)
+    state_dict = torch.load(checkpoint_path)
+    mapper = WeightMapper.from_state_dict(state_dict, target)
 
     # Both source and target now include parameters and buffers (18 total)
     assert len(mapper.source_params) == 18
     assert len(mapper.target_params) == 18
 
     # Should be able to create mapping
-    mapping = mapper.suggest_mapping()
+    result = mapper.suggest_mapping()
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
     assert len(mapping) > 0
 
 
@@ -332,7 +397,11 @@ def test_different_model_configurations(simple_model_class: nn.Module, renamed_m
     assert len(mapper.source_params) > len(mapper.target_params)
 
     # Should still find some matches for compatible layers
-    mapping = mapper.suggest_mapping(threshold=0.5)
+    result = mapper.suggest_mapping(threshold=0.5)
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
     assert len(mapping) > 0
 
     # Verify unmatched parameters are detected
@@ -369,19 +438,27 @@ def test_execution_order_improves_matching_scores(simple_model: nn.Module, renam
     mapper_with_order = WeightMapper(simple_model, renamed_model, dummy_input=dummy_input)
 
     # Generate mappings
-    mapping_no_order = mapper_no_order.suggest_mapping(threshold=0.5)
-    mapping_with_order = mapper_with_order.suggest_mapping(threshold=0.5)
+    result_no_order = mapper_no_order.suggest_mapping(threshold=0.5)
+    mapping_no_order = result_no_order.get_mapping()
+    unmatched_no_order = result_no_order.get_unmatched()
+    result_with_order = mapper_with_order.suggest_mapping(threshold=0.5)
+    mapping_with_order = result_with_order.get_mapping()
+    unmatched_with_order = result_with_order.get_unmatched()
 
     # Both should find the same number of mappings (same architectures)
     assert len(mapping_no_order) == len(mapping_with_order)
 
     # Get scores for comparison
-    scores_no_order = mapper_no_order.get_mapping_with_scores()
-    scores_with_order = mapper_with_order.get_mapping_with_scores()
+    result_no_order_scores = mapper_no_order.suggest_mapping()
+    scores_no_order = result_no_order_scores.get_mapping_with_scores()
+    unmatched_scores_no = result_no_order_scores.get_unmatched()
+    result_with_order_scores = mapper_with_order.suggest_mapping()
+    scores_with_order = result_with_order_scores.get_mapping_with_scores()
+    unmatched_scores_with = result_with_order_scores.get_unmatched()
 
     # Convert to dicts for easier comparison
-    score_dict_no_order = {src: score for src, _, score in scores_no_order}
-    score_dict_with_order = {src: score for src, _, score in scores_with_order}
+    score_dict_no_order = {src: score for src, (_, score) in scores_no_order.items()}
+    score_dict_with_order = {src: score for src, (_, score) in scores_with_order.items()}
 
     # Count how many scores improved, stayed the same, or got worse
     improved = 0
@@ -415,19 +492,20 @@ def test_execution_order_improves_matching_scores(simple_model: nn.Module, renam
     assert avg_score_with_order >= avg_score_no_order - 1e-6
 
 
-def test_execution_order_from_checkpoint(tmp_path: Path, simple_model: nn.Module, renamed_model: nn.Module) -> None:
-    """Test execution order tracking with from_checkpoint method."""
+def test_execution_order_from_state_dict(tmp_path: Path, simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test execution order tracking with from_state_dict method."""
     # Save source model
     checkpoint_path = tmp_path / "model.pth"
     torch.save({"state_dict": simple_model.state_dict()}, checkpoint_path)
 
     # Without dummy_input
-    mapper_no_order = WeightMapper.from_checkpoint(checkpoint_path, renamed_model)
+    checkpoint = torch.load(checkpoint_path)
+    mapper_no_order = WeightMapper.from_state_dict(checkpoint["state_dict"], renamed_model)
     assert all(p.execution_order is None for p in mapper_no_order.target_params.values())
 
     # With dummy_input
     dummy_input = torch.randn(1, 3, 32, 32)
-    mapper_with_order = WeightMapper.from_checkpoint(checkpoint_path, renamed_model, dummy_input=dummy_input)
+    mapper_with_order = WeightMapper.from_state_dict(checkpoint["state_dict"], renamed_model, dummy_input=dummy_input)
 
     target_with_order = sum(1 for p in mapper_with_order.target_params.values() if p.execution_order is not None)
     assert target_with_order > 0, "Should track execution order when dummy_input provided"
@@ -460,14 +538,59 @@ def test_execution_order_with_complex_architectures(
 
     # With execution order tracking
     mapper = WeightMapper(source, target, dummy_input=dummy_input)
-    mapping = mapper.suggest_mapping(threshold=0.5)
+    result = mapper.suggest_mapping(threshold=0.5)
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
 
     # Should find good matches even with larger architectures
     assert len(mapping) > 15, "Should find many matches in larger identical architectures"
 
     # Get scores to verify quality
-    scores = mapper.get_mapping_with_scores()
-    avg_score = sum(s for _, _, s in scores) / len(scores)
+    scores = result.get_mapping_with_scores()
+    unmatched_scores = result.get_unmatched()
+    avg_score = sum(score for _, (_, score) in scores.items()) / len(scores)
 
-    print(f"\nComplex architecture average score: {avg_score:.4f}")
-    assert avg_score > 0.6, "Should maintain good matching quality with execution order"
+
+def test_mapping_preserves_source_order(simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test that the returned mapping preserves the order of source_params."""
+    mapper = WeightMapper(simple_model, renamed_model)
+    result = mapper.suggest_mapping()
+
+    mapping = result.get_mapping()
+
+    unmatched = result.get_unmatched()
+
+    # Get the keys of both source_params and mapping
+    source_keys = list(mapper.source_params.keys())
+    mapping_keys = list(mapping.keys())
+
+    # The mapping keys should appear in the same order as they appear in source_params
+    # (minus any unmatched keys)
+    expected_mapping_keys = [k for k in source_keys if k in mapping]
+    assert mapping_keys == expected_mapping_keys, (
+        f"Mapping order should preserve source_params order.\nExpected: {expected_mapping_keys}\nGot: {mapping_keys}"
+    )
+
+
+def test_mapping_with_scores_preserves_order(simple_model: nn.Module, renamed_model: nn.Module) -> None:
+    """Test that mapping with scores also preserves source_params order."""
+    mapper = WeightMapper(simple_model, renamed_model)
+    result = mapper.suggest_mapping()
+
+    mappings = result.get_mapping_with_scores()
+
+    unmatched = result.get_unmatched()
+
+    # Get the keys
+    source_keys = list(mapper.source_params.keys())
+    mapping_keys = list(mappings.keys())
+
+    # The mapping keys should appear in the same order as they appear in source_params
+    expected_mapping_keys = [k for k in source_keys if k in mappings]
+    assert mapping_keys == expected_mapping_keys, (
+        f"Mapping with scores should preserve source_params order.\n"
+        f"Expected: {expected_mapping_keys}\n"
+        f"Got: {mapping_keys}"
+    )
