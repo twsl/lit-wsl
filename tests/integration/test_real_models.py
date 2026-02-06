@@ -1,14 +1,20 @@
 from pathlib import Path
 import pickle
 
+import pytest
+
 from lit_wsl.mapper.weight_mapper import ParameterInfo, WeightMapper
 
 
-def test_ppyoloe_model_integration():
-    with Path("data/PPYOLOE/source_params.pkl").open("rb") as f:
+@pytest.mark.skipif(
+    not Path("data/source_params.pkl").exists() or not Path("data/target_params.pkl").exists(),
+    reason="Required model parameter files are missing.",
+)
+def test_yolo_model_integration():
+    with Path("data/source_params.pkl").open("rb") as f:
         source_params = pickle.load(f)  # noqa: S301
 
-    with Path("data/PPYOLOE/target_params.pkl").open("rb") as f:
+    with Path("data/target_params.pkl").open("rb") as f:
         target_params = pickle.load(f)  # noqa: S301
 
     mapper = WeightMapper(source_params=source_params, target_params=target_params)
