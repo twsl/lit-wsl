@@ -1,5 +1,5 @@
 from pathlib import Path
-import pickle
+import pickle  # nosec B403
 
 import pytest
 
@@ -12,10 +12,10 @@ from lit_wsl.mapper.weight_mapper import ParameterInfo, WeightMapper
 )
 def test_yolo_model_integration():
     with Path("data/source_params.pkl").open("rb") as f:
-        source_params = pickle.load(f)  # noqa: S301
+        source_params = pickle.load(f)  # noqa: S301  # nosec B301
 
     with Path("data/target_params.pkl").open("rb") as f:
-        target_params = pickle.load(f)  # noqa: S301
+        target_params = pickle.load(f)  # noqa: S301  # nosec B301
 
     mapper = WeightMapper(source_params=source_params, target_params=target_params)
     result = mapper.suggest_mapping(threshold=0.3)

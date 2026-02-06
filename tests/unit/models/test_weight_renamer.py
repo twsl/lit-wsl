@@ -288,7 +288,7 @@ class TestWeightRenamer:
         assert output_path.exists()
 
         # Load saved weights
-        loaded = torch.load(output_path, map_location="cpu")
+        loaded = torch.load(output_path, map_location="cpu")  # nosec B614
         state_dict = loaded.get("state_dict", loaded)
 
         assert "backbone.weight" in state_dict
@@ -320,7 +320,7 @@ class TestWeightRenamer:
         renamer.save(output_path)
 
         # Step 3: Load into target model
-        loaded = torch.load(output_path, map_location="cpu")
+        loaded = torch.load(output_path, map_location="cpu")  # nosec B614
         state_dict = loaded.get("state_dict", loaded)
 
         target_model.load_state_dict(state_dict)
@@ -359,7 +359,7 @@ class TestWeightRenamer:
         renamer.save(output_path)
 
         # Load with strict=False to allow partial loading
-        loaded = torch.load(output_path, map_location="cpu")
+        loaded = torch.load(output_path, map_location="cpu")  # nosec B614
         state_dict = loaded.get("state_dict", loaded)
 
         # Remove incompatible keys
@@ -405,7 +405,7 @@ class TestRenameCheckpointKeys:
         rename_checkpoint_keys(input_path, output_path, key_mapping=key_mapping)
 
         # Verify
-        loaded = torch.load(output_path, map_location="cpu")
+        loaded = torch.load(output_path, map_location="cpu")  # nosec B614
         result_state = loaded.get("state_dict", loaded)
         assert "new.weight" in result_state
         assert "new.bias" in result_state
@@ -423,7 +423,7 @@ class TestRenameCheckpointKeys:
         output_path = tmp_path / "output.pth"
         rename_checkpoint_keys(input_path, output_path, old_prefix="module.", new_prefix="model.")
 
-        loaded = torch.load(output_path, map_location="cpu")
+        loaded = torch.load(output_path, map_location="cpu")  # nosec B614
         assert "model.layer1.weight" in loaded
         assert "model.layer2.weight" in loaded
 
@@ -439,7 +439,7 @@ class TestRenameCheckpointKeys:
         output_path = tmp_path / "output.pth"
         rename_checkpoint_keys(input_path, output_path, old_prefix="prefix.")
 
-        loaded = torch.load(output_path, map_location="cpu")
+        loaded = torch.load(output_path, map_location="cpu")  # nosec B614
         assert "layer.weight" in loaded
         assert "layer.bias" in loaded
 
@@ -511,7 +511,7 @@ class TestComplexWeightTransfer:
 
         # Load into target model
         target = DifferentModel()
-        loaded = torch.load(output_path, map_location="cpu")
+        loaded = torch.load(output_path, map_location="cpu")  # nosec B614
         state_dict = loaded.get("state_dict", loaded)
         target.load_state_dict(state_dict)
 
@@ -550,7 +550,7 @@ class TestComplexWeightTransfer:
         renamer.save(output_path)
 
         # Verify only selected keys are present
-        loaded = torch.load(output_path, map_location="cpu")
+        loaded = torch.load(output_path, map_location="cpu")  # nosec B614
         state_dict = loaded.get("state_dict", loaded)
 
         assert "backbone.weight" in state_dict

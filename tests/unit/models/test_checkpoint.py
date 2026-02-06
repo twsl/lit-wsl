@@ -1,5 +1,5 @@
 from pathlib import Path
-import pickle  # noqa: S403
+import pickle  # noqa: S403  # nosec B403
 
 import pytest
 import torch
@@ -137,7 +137,7 @@ def test_round_trip_with_dict_proxy() -> None:
 
     # Pickle and unpickle
     pickled = pickle.dumps(proxy)
-    restored = pickle.loads(pickled)  # noqa: S301
+    restored = pickle.loads(pickled)  # noqa: S301  # nosec B301
 
     assert isinstance(restored, DictProxy)
     restored_dict = restored.to_dict()

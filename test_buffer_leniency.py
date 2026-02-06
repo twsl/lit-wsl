@@ -2,7 +2,7 @@
 """Quick test to demonstrate lenient buffer matching feature."""
 
 from pathlib import Path
-import pickle
+import pickle  # nosec B403
 
 from lit_wsl.mapper.weight_mapper import WeightMapper
 
@@ -10,10 +10,10 @@ from lit_wsl.mapper.weight_mapper import WeightMapper
 def test_buffer_modes():
     """Compare mapping results with different buffer modes."""
     with Path("data/PPYOLOE/source_params.pkl").open("rb") as f:
-        source_params = pickle.load(f)
+        source_params = pickle.load(f)  # nosec B301  # noqa: S301
 
     with Path("data/PPYOLOE/target_params.pkl").open("rb") as f:
-        target_params = pickle.load(f)
+        target_params = pickle.load(f)  # nosec B301  # noqa: S301
 
     modes = ["strict", "lenient", "exclude"]
     results = {}

@@ -103,7 +103,7 @@ def load_checkpoint_as_dict(checkpoint_path: str | Path) -> dict[str, Any]:
         # Temporarily replace the Unpickler
         pickle.Unpickler = DynamicUnpickler
         # Use torch.load which will use our modified Unpickler
-        loaded_object = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        loaded_object = torch.load(checkpoint_path, map_location="cpu", weights_only=False)  # nosec B614
     finally:
         # Restore original Unpickler
         pickle.Unpickler = original_unpickler

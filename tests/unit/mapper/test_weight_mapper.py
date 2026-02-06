@@ -333,7 +333,7 @@ def test_from_state_dict(tmp_path: Path, simple_model: nn.Module, renamed_model:
     target = renamed_model
 
     # Create mapper from checkpoint file
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path)  # nosec B614
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target)
 
     # Both source and target now include parameters and buffers (18 total)
@@ -367,7 +367,7 @@ def test_from_state_dict_simple(tmp_path: Path, simple_model: nn.Module, renamed
     target = renamed_model
 
     # Create mapper from checkpoint file
-    state_dict = torch.load(checkpoint_path)
+    state_dict = torch.load(checkpoint_path)  # nosec B614
     mapper = WeightMapper.from_state_dict(state_dict, target)
 
     # Both source and target now include parameters and buffers (18 total)
@@ -499,7 +499,7 @@ def test_execution_order_from_state_dict(tmp_path: Path, simple_model: nn.Module
     torch.save({"state_dict": simple_model.state_dict()}, checkpoint_path)
 
     # Without dummy_input
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path)  # nosec B614
     mapper_no_order = WeightMapper.from_state_dict(checkpoint["state_dict"], renamed_model)
     assert all(p.execution_order is None for p in mapper_no_order.target_params.values())
 

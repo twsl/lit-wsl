@@ -31,7 +31,7 @@ def test_complete_weight_mapping_workflow(
     new_model.eval()
 
     # 4. Use WeightMapper to discover mapping
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path)  # nosec B614
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], new_model)
     result = mapper.suggest_mapping(threshold=0.5)
     mapping = result.get_mapping()
@@ -62,7 +62,7 @@ def test_complete_weight_mapping_workflow(
     renamer.save(renamed_checkpoint_path)
 
     # 6. Load renamed weights into new model
-    renamed_checkpoint = torch.load(renamed_checkpoint_path)
+    renamed_checkpoint = torch.load(renamed_checkpoint_path)  # nosec B614
     new_model.load_state_dict(renamed_checkpoint["state_dict"], strict=False)
     new_model.eval()
 
@@ -111,7 +111,7 @@ def test_weight_mapping_with_identical_architectures(tmp_path: Path, simple_mode
     target_model.eval()
 
     # 4. Use WeightMapper to discover mapping
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path)  # nosec B614
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model)
     result = mapper.suggest_mapping()
     mapping = result.get_mapping()
@@ -135,7 +135,7 @@ def test_weight_mapping_with_identical_architectures(tmp_path: Path, simple_mode
     renamer.save(renamed_checkpoint_path)
 
     # 6. Load into target model
-    renamed_checkpoint = torch.load(renamed_checkpoint_path)
+    renamed_checkpoint = torch.load(renamed_checkpoint_path)  # nosec B614
     target_model.load_state_dict(renamed_checkpoint["state_dict"], strict=False)
     target_model.eval()
 
@@ -174,7 +174,7 @@ def test_partial_weight_mapping(tmp_path: Path, simple_model_class: nn.Module, r
     target_model.eval()
 
     # 4. Use WeightMapper to find compatible layers
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path)  # nosec B614
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model)
     result = mapper.suggest_mapping(threshold=0.5)
     mapping = result.get_mapping()
@@ -207,7 +207,7 @@ def test_partial_weight_mapping(tmp_path: Path, simple_model_class: nn.Module, r
     renamer.save(renamed_checkpoint_path)
 
     # 7. Load with strict=False to allow missing keys
-    renamed_checkpoint = torch.load(renamed_checkpoint_path)
+    renamed_checkpoint = torch.load(renamed_checkpoint_path)  # nosec B614
     missing_keys, unexpected_keys = target_model.load_state_dict(renamed_checkpoint["state_dict"], strict=False)
 
     # Should have some missing keys (unmatched target params)
@@ -293,7 +293,7 @@ def test_execution_order_impact_on_workflow(
     dummy_input = torch.randn(2, 3, 32, 32)
 
     # 4. Compare mappings with and without execution order
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path)  # nosec B614
     mapper_no_order = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model)
     mapper_with_order = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model, dummy_input=dummy_input)
 

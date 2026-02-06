@@ -299,7 +299,7 @@ def test_complex_model_from_checkpoint(
     target = complex_model_reimplemented
 
     # Load and create mapper
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path)  # nosec B614
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target)
 
     assert len(mapper.source_params) > 0
