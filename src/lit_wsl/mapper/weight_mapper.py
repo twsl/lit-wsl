@@ -19,6 +19,7 @@ from lit_wsl.mapper.result_types import (
     TransformationInfo,
 )
 from lit_wsl.mapper.similarity_scorer import SimilarityScorer
+from lit_wsl.models.checkpoint import extract_state_dict
 from lit_wsl.utils.logger import get_logger
 
 
@@ -59,13 +60,11 @@ class WeightMapper:
         >>> # With threshold filtering
         >>> mapping, unmatched = mapper.suggest_mapping(threshold=0.6)
         >>>
-        >>> # From checkpoint (most common case)
+        >>> # From checkpoint (most common case) - automatically extracts model state
         >>> from lit_wsl.models.checkpoint import load_checkpoint_as_dict
         >>> target_model = NewModel()
         >>> checkpoint = load_checkpoint_as_dict("old_weights.pth")
-        >>> mapper = WeightMapper.from_state_dict(
-        ...     source_state_dict=checkpoint.get("state_dict", checkpoint), target_module=target_model
-        ... )
+        >>> mapper = WeightMapper.from_state_dict(source_state_dict=checkpoint, target_module=target_model)
         >>>
         >>> # Analyze and apply mapping
         >>> mapping, unmatched = mapper.suggest_mapping(threshold=0.6)
@@ -82,8 +81,8 @@ class WeightMapper:
         shape_tolerance: float = 0.0,
         buffer_matching_mode: str = "lenient",
         *,
-        source_params: dict[str, ParameterInfo] | None = None,
-        target_params: dict[str, ParameterInfo] | None = None,
+        source_params: dict[str, ParameterInfo] | dict[str, Any] | None = None,
+        target_params: dict[str, ParameterInfo] | dict[str, Any] | None = None,
         dummy_input: torch.Tensor | None = None,
         incompatible_pairs: list[tuple[set[str], set[str]]] | None = None,
     ):
@@ -97,8 +96,12 @@ class WeightMapper:
                 - 'strict': Buffers must match shapes exactly (safest, original behavior)
                 - 'lenient': Buffer shape mismatches get soft penalty, not hard reject
                 - 'exclude': Ignore all buffers in matching (trainable params only)
-            source_params: Pre-extracted source parameters (internal use)
-            target_params: Pre-extracted target parameters (internal use)
+            source_params: Pre-extracted source parameters or raw checkpoint/state dict.
+                          Can be dict[str, ParameterInfo] (pre-extracted), dict[str, Tensor] (state dict),
+                          or a checkpoint dict with keys like 'model', 'state_dict', etc.
+                          The model state will be extracted automatically if needed.
+            target_params: Pre-extracted target parameters or raw checkpoint/state dict.
+                          Same flexibility as source_params.
             dummy_input: Optional dummy input tensor for execution order tracking.
                         Works perfectly fine without it. When provided, runs a forward pass
                         to track layer execution order, which can improve matching scores
@@ -124,14 +127,14 @@ class WeightMapper:
 
         # Extract parameter information
         if source_params is not None:
-            self.source_params = source_params
+            self.source_params = self._prepare_params(source_params)
         elif source_module is not None:
             self.source_params = self.extractor.extract_from_module(source_module, dummy_input=dummy_input)
         else:
             raise ValueError("Either source_module or source_params must be provided")
 
         if target_params is not None:
-            self.target_params = target_params
+            self.target_params = self._prepare_params(target_params)
         elif target_module is not None:
             self.target_params = self.extractor.extract_from_module(target_module, dummy_input=dummy_input)
         else:
@@ -154,6 +157,30 @@ class WeightMapper:
         # Storage for mapping results
         self._result: MappingResult | None = None
 
+    def _prepare_params(self, params: dict[str, ParameterInfo] | dict[str, Any]) -> dict[str, ParameterInfo]:
+        """Prepare parameters by extracting from checkpoint/state dict if needed.
+
+        Args:
+            params: Either pre-extracted dict[str, ParameterInfo], a state dict,
+                   or a checkpoint dict with keys like 'model', 'state_dict', etc.
+
+        Returns:
+            dict[str, ParameterInfo]: Extracted parameter information
+        """
+        # Check if already ParameterInfo objects
+        if params and isinstance(next(iter(params.values())), ParameterInfo):
+            return params
+
+        # It's a raw checkpoint or state_dict, extract it
+        try:
+            actual_state_dict = extract_state_dict(params)
+        except ValueError:
+            # Assume it's already a state dict
+            actual_state_dict = params
+
+        state_dict = self.extractor.extract_from_state_dict(actual_state_dict)
+        return state_dict
+
     @classmethod
     def from_state_dict(
         cls,
@@ -168,7 +195,9 @@ class WeightMapper:
         This is useful when you only have a checkpoint file but not the original model.
 
         Args:
-            source_state_dict: State dictionary from the source model (e.g., loaded checkpoint)
+            source_state_dict: State dictionary from the source model (e.g., loaded checkpoint).
+                              Can be a raw checkpoint dict with keys like 'model', 'state_dict',
+                              'optimizer', etc. The actual model parameters will be extracted automatically.
             target_module: The target model to adapt weights to
             shape_tolerance: Relative tolerance for shape matching (0.0 = exact match only)
             dummy_input: (Optional) Dummy input tensor for execution order tracking.
@@ -183,12 +212,10 @@ class WeightMapper:
             >>> import torch
             >>> from lit_wsl.mapper.weight_mapper import WeightMapper
             >>>
-            >>> # Load old weights
+            >>> # Load old weights (can contain 'model', 'optimizer', etc.)
             >>> old_weights = torch.load("old_model.pth")
-            >>> if "state_dict" in old_weights:
-            ...     old_weights = old_weights["state_dict"]
             >>>
-            >>> # Create mapper and get mappings with scores
+            >>> # Create mapper - automatically extracts model state dict
             >>> new_model = NewModel()
             >>> mapper = WeightMapper.from_state_dict(old_weights, new_model)
             >>> mapping_with_scores, unmatched = mapper.suggest_mapping(return_scores=True)
@@ -196,17 +223,13 @@ class WeightMapper:
             >>> # Filter by confidence threshold
             >>> high_confidence = {src: tgt for src, (tgt, score) in mapping_with_scores.items() if score > 0.7}
         """
-        # Extract parameters from state dict
-        extractor = ParameterExtractor()
-        source_params = extractor.extract_from_state_dict(source_state_dict)
-        target_params = extractor.extract_from_module(target_module, dummy_input=dummy_input)
-
+        # Just pass the raw source_state_dict to __init__, _prepare_params will handle extraction
         return cls(
             source_module=None,
             target_module=target_module,
             shape_tolerance=shape_tolerance,
-            source_params=source_params,
-            target_params=target_params,
+            source_params=source_state_dict,
+            target_params=None,
             dummy_input=dummy_input,
             incompatible_pairs=incompatible_pairs,
         )
