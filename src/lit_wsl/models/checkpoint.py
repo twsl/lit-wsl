@@ -1,5 +1,5 @@
 from pathlib import Path
-import pickle
+import pickle  # nosec B403
 from typing import Any
 
 import torch
@@ -121,7 +121,7 @@ def load_checkpoint_as_dict(checkpoint_path: str | Path) -> dict[str, Any]:
                 }
             except Exception:  # noqa: S110
                 # If state_dict() fails, treat as DictProxy or regular object
-                pass
+                pass  # nosec B110
 
         if isinstance(obj, DictProxy):
             data = obj.to_dict()

@@ -65,18 +65,18 @@ class ModelTester(Generic[LightningModuleType, InputType]):
         pass
 
     def test_lightning_init(self, lightning_model: LightningModuleType) -> None:
-        assert lightning_model is not None  # noqa: S101
+        assert lightning_model is not None  # noqa: S101  # nosec B101
 
     def test_lightning_compile(self, lightning_model: LightningModuleType, compile_options: dict[str, Any]) -> None:
         # lightning_model.compile(**compile_options)
         # assert lightning_model is not None  # noqa: S101
         model = torch.compile(lightning_model, **compile_options)
-        assert model is not None  # noqa: S101
+        assert model is not None  # noqa: S101  # nosec B101
 
     def test_lightning_save_load(self, lightning_model: LightningModuleType, tmp_path: Path) -> None:
         path = tmp_path / lightning_model.__class__.__name__
         torch.save(lightning_model, path)
-        model = torch.load(path, weights_only=False)
+        model = torch.load(path, weights_only=False)  # nosec B614
         model.eval()
 
     def get_dataset(self, stage: Stage, *args, **kwargs) -> Dataset:
@@ -101,7 +101,7 @@ class ModelTester(Generic[LightningModuleType, InputType]):
         self.trainer.test(lightning_model, datamodule=dm)
 
         results = self.trainer.predict(lightning_model, datamodule=dm)
-        assert results is not None  # noqa: S101
+        assert results is not None  # noqa: S101  # nosec B101
 
     @property
     def trainer(self) -> pl.Trainer:

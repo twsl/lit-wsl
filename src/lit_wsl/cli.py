@@ -28,7 +28,7 @@ def load_checkpoint(checkpoint_path: str) -> dict:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     try:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)  # nosec B614
     except Exception as e:
         raise RuntimeError(f"Failed to load checkpoint: {e}") from e
 

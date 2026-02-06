@@ -58,7 +58,7 @@ class WeightRenamer:
         if use_checkpoint_loader:
             self.weights = load_checkpoint_as_dict(self.weight_path)
         else:
-            self.weights = torch.load(self.weight_path, map_location="cpu")
+            self.weights = torch.load(self.weight_path, map_location="cpu")  # nosec B614
         self._original_weights = None
 
     @property
