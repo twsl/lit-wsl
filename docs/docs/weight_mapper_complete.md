@@ -1075,9 +1075,9 @@ This allows efficient lookup of candidate groups with matching parameter structu
 
 ### Backward Compatibility
 
-✓ All existing tests pass  
-✓ Same public API  
-✓ Enhanced internal implementation  
+✓ All existing tests pass
+✓ Same public API
+✓ Enhanced internal implementation
 ✓ Optional - works without hierarchy awareness
 
 ---
