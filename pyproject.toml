@@ -106,7 +106,7 @@ vcs = "git"
 style = "semver"
 pattern = "default-unprefixed"
 fallback-version = "1.0.0"
-format = "{base}+{distance}.{commit}"
+format-jinja = "{% if distance == 0 %}{{ base }}{% else %}{{ base }}+{{ distance }}.{{ commit }}{% endif %}"
 
 [tool.hatch.build.hooks.version]
 path = "src/lit_wsl/__about__.py"
