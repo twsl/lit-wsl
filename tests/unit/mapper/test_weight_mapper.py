@@ -31,9 +31,9 @@ def test_weight_mapper_initialization(simple_model: nn.Module, renamed_model: nn
     # - 2 conv layers with weight+bias (4 params)
     # - 2 BatchNorm layers with weight+bias+running_mean+running_var+num_batches_tracked (10 params+buffers)
     # - 2 fc layers with weight+bias (4 params)
-    # Total: 12 parameters + 6 buffers = 18
-    assert len(mapper.source_params) == 18
-    assert len(mapper.target_params) == 18
+    # Total: 12 trainable parameters (6 buffers excluded by default)
+    assert len(mapper.source_params) == 12
+    assert len(mapper.target_params) == 12
     assert len(mapper.target_by_shape) > 0
 
 
@@ -49,8 +49,8 @@ def test_suggest_mapping_best_match(simple_model: nn.Module, renamed_model: nn.M
 
     unmatched = result.get_unmatched()
 
-    # Should find matches for most parameters (including buffers)
-    assert len(mapping) >= 16  # At least most params+buffers should match
+    # Should find matches for most trainable parameters (buffers excluded by default)
+    assert len(mapping) >= 10  # At least most trainable params should match
 
     # Check some specific nested mappings exist
     assert any("encoder.layers" in key for key in mapping)
@@ -72,8 +72,8 @@ def test_suggest_mapping_no_threshold(simple_model: nn.Module, renamed_model: nn
 
     unmatched = result.get_unmatched()
 
-    # Should match all or most parameters+buffers by shape since architectures are similar
-    assert len(mapping) >= 16
+    # Should match all or most trainable parameters by shape (buffers excluded by default)
+    assert len(mapping) >= 10
     assert isinstance(unmatched, dict)
 
 
@@ -218,8 +218,8 @@ def test_exact_match_names(simple_model_class: nn.Module) -> None:
 
     unmatched = result.get_unmatched()
 
-    # All parameters and buffers should match with their exact counterparts
-    assert len(mapping) == 18
+    # All trainable parameters should match with their exact counterparts (buffers excluded by default)
+    assert len(mapping) == 12
     for source_name in mapping:
         assert mapping[source_name] == source_name  # Exact name match
 
@@ -234,8 +234,8 @@ def test_match_with_itself(simple_model: nn.Module) -> None:
 
     unmatched = result.get_unmatched()
 
-    # All parameters and buffers should map to themselves
-    assert len(mapping) == 18, "Should map all 18 parameters and buffers"
+    # All trainable parameters should map to themselves (buffers excluded by default)
+    assert len(mapping) == 12, "Should map all 12 trainable parameters"
 
     # Every parameter should map to itself with the same name
     for source_name, target_name in mapping.items():
@@ -299,9 +299,9 @@ def test_from_state_dict_nested(simple_model: nn.Module, renamed_model: nn.Modul
     # Extract state_dict manually
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target)
 
-    # Both source and target now include parameters and buffers (18 total)
-    assert len(mapper.source_params) == 18
-    assert len(mapper.target_params) == 18
+    # Both source and target now include only trainable parameters (buffers excluded by default)
+    assert len(mapper.source_params) == 12
+    assert len(mapper.target_params) == 12
 
     result = mapper.suggest_mapping()
 
@@ -336,9 +336,9 @@ def test_from_state_dict(tmp_path: Path, simple_model: nn.Module, renamed_model:
     checkpoint = torch.load(checkpoint_path)  # nosec B614
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target)
 
-    # Both source and target now include parameters and buffers (18 total)
-    assert len(mapper.source_params) == 18
-    assert len(mapper.target_params) == 18
+    # Both source and target now include only trainable parameters (buffers excluded by default)
+    assert len(mapper.source_params) == 12
+    assert len(mapper.target_params) == 12
 
     # Should be able to create mapping
     result = mapper.suggest_mapping()
@@ -370,9 +370,9 @@ def test_from_state_dict_simple(tmp_path: Path, simple_model: nn.Module, renamed
     state_dict = torch.load(checkpoint_path)  # nosec B614
     mapper = WeightMapper.from_state_dict(state_dict, target)
 
-    # Both source and target now include parameters and buffers (18 total)
-    assert len(mapper.source_params) == 18
-    assert len(mapper.target_params) == 18
+    # Both source and target now include only trainable parameters (buffers excluded by default)
+    assert len(mapper.source_params) == 12
+    assert len(mapper.target_params) == 12
 
     # Should be able to create mapping
     result = mapper.suggest_mapping()

@@ -1,6 +1,6 @@
 from logging import Logger
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import torch
 from torch import nn
@@ -80,7 +80,7 @@ class WeightMapper:
         source_module: nn.Module | None = None,
         target_module: nn.Module | None = None,
         shape_tolerance: float = 0.0,
-        buffer_matching_mode: str = "lenient",
+        buffer_matching_mode: Literal["strict", "lenient", "exclude"] = "exclude",
         *,
         source_params: dict[str, ParameterInfo] | dict[str, Any] | None = None,
         target_params: dict[str, ParameterInfo] | dict[str, Any] | None = None,
@@ -93,10 +93,10 @@ class WeightMapper:
             source_module: The source model (with weights to adapt from)
             target_module: The target model (to adapt weights to)
             shape_tolerance: Relative tolerance for shape matching (0.0 = exact match only)
-            buffer_matching_mode: How to handle buffer matching (default: 'lenient')
+            buffer_matching_mode: How to handle buffer matching (default: 'exclude')
                 - 'strict': Buffers must match shapes exactly (safest, original behavior)
                 - 'lenient': Buffer shape mismatches get soft penalty, not hard reject
-                - 'exclude': Ignore all buffers in matching (trainable params only)
+                - 'exclude': Ignore all buffers in matching (trainable params only, DEFAULT)
             source_params: Pre-extracted source parameters or raw checkpoint/state dict.
                           Can be dict[str, ParameterInfo] (pre-extracted), dict[str, Tensor] (state dict),
                           or a checkpoint dict with keys like 'model', 'state_dict', etc.
@@ -137,6 +137,15 @@ class WeightMapper:
             self.target_params = self.extractor.extract_from_module(target_module, dummy_input=dummy_input)
         else:
             raise ValueError("Either target_module or target_params must be provided")
+
+        # Performance optimization: Filter out buffers early when using 'exclude' mode
+        # This reduces the comparison space significantly, improving performance
+        if self.buffer_matching_mode == "exclude":
+            self.source_params = self.extractor.filter_buffers(self.source_params)
+            self.target_params = self.extractor.filter_buffers(self.target_params)
+            self.logger.debug(
+                f"Filtered buffers: source={len(self.source_params)} params, target={len(self.target_params)} params"
+            )
 
         self.target_by_shape = self.extractor.build_shape_index(self.target_params)
 

@@ -115,12 +115,12 @@ def test_weight_mapping_with_identical_architectures(tmp_path: Path, simple_mode
     mapper = WeightMapper.from_state_dict(checkpoint["state_dict"], target_model)
     result = mapper.suggest_mapping()
     mapping = result.get_mapping()
-    unmatched = result.get_unmatched()
+    _unmatched = result.get_unmatched()
 
-    # With identical architectures, all parameters and buffers should map
-    # Note: state_dict has 18 entries (12 params + 6 buffers)
+    # With identical architectures, all trainable parameters should map
+    # Note: With default buffer_matching_mode='exclude', only trainable params (12) are matched
     print(f"\nMapped {len(mapping)} parameters")
-    assert len(mapping) == 18  # All parameters and buffers should map
+    assert len(mapping) == 12  # All trainable parameters should map (buffers excluded by default)
     # Validate parameter type matching
     for source_name, target_name in mapping.items():
         source_type = source_name.split(".")[-1]

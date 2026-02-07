@@ -27,7 +27,7 @@ class MappingStrategy:
         target_groups: dict[str, ParameterGroup],
         scorer: SimilarityScorer,
         hierarchy_analyzer: HierarchyAnalyzer,
-        buffer_matching_mode: str = "lenient",
+        buffer_matching_mode: Literal["strict", "lenient", "exclude"] = "exclude",
     ) -> None:
         """Initialize the MappingStrategy.
 
@@ -38,10 +38,10 @@ class MappingStrategy:
             target_groups: Dictionary of target parameter groups
             scorer: SimilarityScorer instance for computing scores
             hierarchy_analyzer: HierarchyAnalyzer instance for hierarchy checks
-            buffer_matching_mode: How to handle buffer matching (default: 'lenient')
+            buffer_matching_mode: How to handle buffer matching (default: 'exclude')
                 - 'strict': Require exact buffer matches
                 - 'lenient': Allow buffer shape mismatches with soft penalty
-                - 'exclude': Ignore buffers entirely in matching
+                - 'exclude': Ignore buffers entirely in matching (DEFAULT)
         """
         self.logger: Logger = get_logger(self.__class__.__name__)
         self.source_params = source_params

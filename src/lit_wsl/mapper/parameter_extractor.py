@@ -214,3 +214,18 @@ class ParameterExtractor:
                 index[param_types] = []
             index[param_types].append(module_path)
         return index
+
+    def filter_buffers(self, params: dict[str, ParameterInfo]) -> dict[str, ParameterInfo]:
+        """Filter out buffer parameters for performance optimization.
+
+        When using buffer_matching_mode='exclude', this method removes all buffers
+        from the parameter dictionary, significantly improving performance by reducing
+        the comparison space.
+
+        Args:
+            params: Dictionary of parameter information
+
+        Returns:
+            Dictionary containing only trainable parameters (no buffers)
+        """
+        return {name: info for name, info in params.items() if not info.is_buffer}

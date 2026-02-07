@@ -1,4 +1,4 @@
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from lit_wsl.mapper.parameter_group import ParameterGroup
 from lit_wsl.mapper.parameter_info import ParameterInfo
@@ -33,15 +33,17 @@ class SimilarityScorer:
     - Composite scoring with customizable weights
     """
 
-    def __init__(self, shape_tolerance: float = 0.0, buffer_matching_mode: str = "lenient") -> None:
+    def __init__(
+        self, shape_tolerance: float = 0.0, buffer_matching_mode: Literal["strict", "lenient", "exclude"] = "exclude"
+    ) -> None:
         """Initialize the SimilarityScorer.
 
         Args:
             shape_tolerance: Relative tolerance for shape matching (0.0 = exact match only)
             buffer_matching_mode: How to handle buffer mismatches
                 - 'strict': Buffer shape mismatches cause complete failure
-                - 'lenient': Buffer shape mismatches get soft penalty (DEFAULT)
-                - 'exclude': Buffers are not scored at all
+                - 'lenient': Buffer shape mismatches get soft penalty
+                - 'exclude': Buffers are not scored at all (DEFAULT)
         """
         self.shape_tolerance = shape_tolerance
         self.buffer_matching_mode = buffer_matching_mode
