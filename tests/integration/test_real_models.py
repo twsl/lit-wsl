@@ -2,6 +2,7 @@ from pathlib import Path
 import pickle  # nosec B403
 
 import pytest
+import torch
 
 from lit_wsl.mapper.weight_mapper import ParameterInfo, WeightMapper
 
@@ -17,7 +18,8 @@ def test_yolo_model_integration():
     with Path("data/target_params.pkl").open("rb") as f:
         target_params = pickle.load(f)  # noqa: S301  # nosec B301
 
-    mapper = WeightMapper(source_params=source_params, target_params=target_params)
+    dummy_input = torch.zeros((1, 3, 640, 640))
+    mapper = WeightMapper(source_params=source_params, target_params=target_params, dummy_input=dummy_input)
     result = mapper.suggest_mapping(threshold=0.3)
 
     mapping = result.get_mapping()

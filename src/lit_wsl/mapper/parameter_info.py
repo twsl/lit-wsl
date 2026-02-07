@@ -27,23 +27,19 @@ class ParameterInfo:
         self.numel = tensor.numel()
         self.execution_order = execution_order
 
-        # Buffer and gradient tracking
         self.is_buffer = is_buffer
         self.requires_grad = requires_grad if requires_grad is not None else tensor.requires_grad
 
-        # Parse hierarchical structure
         self.parts = name.split(".")
         self.depth = len(self.parts)
-        self.param_name = self.parts[-1]  # e.g., 'weight', 'bias'
+        self.param_name = self.parts[-1]
         self.module_path = ".".join(self.parts[:-1]) if self.depth > 1 else ""
 
-        # Extract tokens for name matching
         self.tokens = self._extract_tokens(name)
 
     @property
     def is_trainable(self) -> bool:
         """Check if this parameter is trainable (requires gradients)."""
-        # Handle backward compatibility
         is_buf = getattr(self, "is_buffer", False)
         req_grad = getattr(self, "requires_grad", True)
         return req_grad and not is_buf
@@ -51,9 +47,7 @@ class ParameterInfo:
     @property
     def is_statistical_buffer(self) -> bool:
         """Check if this is a statistical buffer (running stats, tracking counters)."""
-        # Handle backward compatibility for pickled objects without is_buffer attribute
         if not hasattr(self, "is_buffer"):
-            # Infer from parameter name
             param_name = self.param_name if hasattr(self, "param_name") else self.name.split(".")[-1]
             return param_name in {"running_mean", "running_var", "num_batches_tracked"}
 
@@ -74,10 +68,8 @@ class ParameterInfo:
         Returns:
             Set of tokens
         """
-        # Split by common separators and extract meaningful parts
         import re
 
-        # Split on dots, underscores, and camelCase boundaries
         tokens = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)|\d+", name.replace(".", "_"))
         return {t.lower() for t in tokens if len(t) > 1}
 

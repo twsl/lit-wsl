@@ -100,32 +100,23 @@ def load_checkpoint_as_dict(checkpoint_path: str | Path) -> dict[str, Any]:
     original_unpickler = pickle.Unpickler
 
     try:
-        # Temporarily replace the Unpickler
         pickle.Unpickler = DynamicUnpickler
-        # Use torch.load which will use our modified Unpickler
         loaded_object = torch.load(checkpoint_path, map_location="cpu", weights_only=False)  # nosec B614
     finally:
-        # Restore original Unpickler
         pickle.Unpickler = original_unpickler
 
-    # Convert DictProxy objects to plain dictionaries recursively
     def convert_to_dict(obj: Any) -> Any:
-        # Check for PyTorch modules first (before DictProxy check)
-        # because DynamicProxy instances might also match isinstance(obj, DictProxy)
         if isinstance(obj, nn.Module):
-            # Handle PyTorch modules that were successfully loaded
             try:
                 return {
                     "__class__": f"{obj.__class__.__module__}.{obj.__class__.__name__}",
                     "state_dict": obj.state_dict(),
                 }
             except Exception:  # noqa: S110
-                # If state_dict() fails, treat as DictProxy or regular object
                 pass  # nosec B110
 
         if isinstance(obj, DictProxy):
             data = obj.to_dict()
-            # Recursively convert nested DictProxy objects
             return {k: convert_to_dict(v) for k, v in data.items()}
         elif isinstance(obj, dict):
             return {k: convert_to_dict(v) for k, v in obj.items()}
@@ -136,7 +127,6 @@ def load_checkpoint_as_dict(checkpoint_path: str | Path) -> dict[str, Any]:
 
     result = convert_to_dict(loaded_object)
 
-    # Ensure we return a dictionary
     if not isinstance(result, dict):
         result = {"checkpoint": result}
 

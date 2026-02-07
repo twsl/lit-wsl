@@ -111,31 +111,23 @@ class SimilarityScorer:
         Returns:
             NameScoreComponents with individual and combined scores
         """
-        # CRITICAL: Parameter types must match (weight->weight, bias->bias, etc.)
-        # This prevents weight being mapped to bias and vice versa
         if source_info.param_name != target_info.param_name:
             return NameScoreComponents(0.0, 0.0, 0.0, 0.0)
 
-        # Exact match
         if source_info.name == target_info.name:
             return NameScoreComponents(1.0, 1.0, 1.0, 1.0)
 
-        # Token overlap (Jaccard similarity)
         intersection = len(source_info.tokens & target_info.tokens)
         union = len(source_info.tokens | target_info.tokens)
         token_score = intersection / union if union > 0 else 0.0
 
-        # Edit distance (normalized)
         edit_distance = self._levenshtein_distance(source_info.name, target_info.name)
         max_len = max(len(source_info.name), len(target_info.name))
         edit_score = 1.0 - (edit_distance / max_len) if max_len > 0 else 0.0
 
-        # Longest common substring
         lcs_len = self._longest_common_substring_length(source_info.name, target_info.name)
         lcs_score = lcs_len / max_len if max_len > 0 else 0.0
 
-        # Since param_name already matches, give high weight to other factors
-        # Weighted combination
         combined = 0.4 * token_score + 0.3 * edit_score + 0.3 * lcs_score
         return NameScoreComponents(token_score, edit_score, lcs_score, combined)
 
@@ -157,41 +149,36 @@ class SimilarityScorer:
         Returns:
             HierarchyScoreComponents with individual and combined scores
         """
-        # Depth similarity
         max_depth = max(source_info.depth, target_info.depth)
         depth_score = 1.0 - abs(source_info.depth - target_info.depth) / max_depth if max_depth > 0 else 1.0
 
-        # Module path similarity
         if source_info.module_path and target_info.module_path:
             source_parts = source_info.parts[:-1]
             target_parts = target_info.parts[:-1]
 
-            # Check numeric index compatibility
-            # This ensures sequence ordering is preserved (stages.0 before stages.1)
             if hierarchy_analyzer is not None and not hierarchy_analyzer.check_numeric_index_compatibility(
                 source_info.module_path, target_info.module_path, group_mapping
             ):
-                # Numeric ordering violation - return very low scores
                 return HierarchyScoreComponents(0.0, 0.0, 0.0, 0.0)
-
-            # Top-level module matching with semantic equivalence
-            # This is now a SOFT constraint - affects scoring but doesn't hard reject
             semantic_penalty = 1.0
+            semantic_boost = 1.0
             if len(source_parts) > 0 and len(target_parts) > 0:
                 # Check first level (e.g., 'backbone', 'neck', 'yolo_head' vs 'head')
-                if hierarchy_analyzer is not None and not hierarchy_analyzer.are_modules_semantically_equivalent(
-                    source_parts[0], target_parts[0]
-                ):
-                    # Cross-component mapping - apply penalty but don't hard reject
-                    semantic_penalty = 0.5
+                if hierarchy_analyzer is not None:
+                    if not hierarchy_analyzer.are_modules_semantically_equivalent(source_parts[0], target_parts[0]):
+                        semantic_penalty = 0.5
+                    else:
+                        source_metadata = hierarchy_analyzer.extract_hierarchy_metadata(source_info.module_path)
+                        target_metadata = hierarchy_analyzer.extract_hierarchy_metadata(target_info.module_path)
+                        semantic_boost = hierarchy_analyzer.compute_semantic_similarity_boost(
+                            source_metadata.chunks, target_metadata.chunks
+                        )
 
                 # Check second level for important structural components
                 if len(source_parts) > 1 and len(target_parts) > 1:
                     if source_parts[1] != target_parts[1]:
-                        # Penalty for second-level mismatch
                         path_score = 0.1
                     else:
-                        # Count matching parts from the beginning
                         matching_levels = 0
                         for s, t in zip(source_parts, target_parts, strict=False):
                             if s == t:
@@ -219,8 +206,8 @@ class SimilarityScorer:
                 max_levels = max(len(source_parts), len(target_parts))
                 path_score = matching_levels / max_levels if max_levels > 0 else 0.0
 
-            # Apply semantic penalty to path score
-            path_score *= semantic_penalty
+            # Apply semantic penalty and boost to path score, capped at 1.0
+            path_score = min(1.0, path_score * semantic_penalty * semantic_boost)
         else:
             path_score = 0.5 if source_info.module_path == target_info.module_path else 0.0
 

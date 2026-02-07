@@ -1,5 +1,5 @@
 from logging import Logger
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from lit_wsl.mapper.hierarchy_analyzer import HierarchyAnalyzer
 from lit_wsl.mapper.parameter_group import ParameterGroup
@@ -56,8 +56,33 @@ class MappingStrategy:
         self,
         threshold: float,
         weights: dict[str, float] | None = None,
+        strategy: Literal["greedy", "optimal"] = "optimal",
     ) -> list[GroupMatchResult]:
         """Suggest mapping at the group level using hierarchical structure.
+
+        This method uses a two-phase approach:
+        1. COMPATIBLE MATCH: First filter candidates by compatible param_types and shapes
+        2. STRUCTURAL SCORING: Then score by hierarchy, step numbers, and chunks
+
+        Args:
+            threshold: Minimum score threshold
+            weights: Custom weights for scoring
+            strategy: Matching strategy - "greedy" (fast, local optimal) or "optimal" (Hungarian algorithm, global optimal)
+
+        Returns:
+            List of GroupMatchResult objects for all source groups (matched and unmatched)
+        """
+        if strategy == "optimal":
+            return self._suggest_group_mapping_optimal(threshold, weights)
+        else:
+            return self._suggest_group_mapping_greedy(threshold, weights)
+
+    def _suggest_group_mapping_greedy(
+        self,
+        threshold: float,
+        weights: dict[str, float] | None = None,
+    ) -> list[GroupMatchResult]:
+        """Suggest mapping at the group level using hierarchical structure (greedy strategy).
 
         This method uses a two-phase approach:
         1. COMPATIBLE MATCH: First filter candidates by compatible param_types and shapes
@@ -200,6 +225,186 @@ class MappingStrategy:
                     param_type_shapes={},
                 )
 
+            results.append(result)
+
+        return results
+
+    def _suggest_group_mapping_optimal(
+        self,
+        threshold: float,
+        weights: dict[str, float] | None = None,
+    ) -> list[GroupMatchResult]:
+        """Suggest mapping using Hungarian algorithm for global optimal assignment.
+
+        This method builds a cost matrix for all compatible source-target pairs and
+        uses the Hungarian algorithm to find the globally optimal assignment that
+        minimizes total cost (maximizes total score).
+
+        Args:
+            threshold: Minimum score threshold (applied after optimal assignment)
+            weights: Custom weights for scoring
+
+        Returns:
+            List of GroupMatchResult objects for all source groups (matched and unmatched)
+        """
+        try:
+            from scipy.optimize import linear_sum_assignment
+        except ImportError:
+            self.logger.warning(
+                "scipy not available, falling back to greedy strategy. "
+                "Install scipy for optimal matching: pip install scipy"
+            )
+            return self._suggest_group_mapping_greedy(threshold, weights)
+
+        results = []
+        sorted_source_paths = sorted(self.source_groups.keys(), key=lambda x: (x.count("."), x))
+
+        # Phase 1: Build compatibility matrix and score all valid pairs
+        # Maps (source_idx, target_idx) -> score and metadata
+        source_paths = sorted_source_paths
+        target_paths = sorted(self.target_groups.keys(), key=lambda x: (x.count("."), x))
+
+        n_source = len(source_paths)
+        n_target = len(target_paths)
+
+        # Create cost matrix (convert similarity to cost: cost = 1 - score)
+        # Initialize with high cost (low similarity)
+        import numpy as np
+
+        cost_matrix = np.ones((n_source, n_target)) * 1e6  # High cost for incompatible
+
+        # Store metadata for each valid pairing
+        pair_metadata = {}
+
+        for source_idx, source_path in enumerate(source_paths):
+            source_group = self.source_groups[source_path]
+            source_metadata = self.hierarchy_analyzer.extract_hierarchy_metadata(source_path)
+
+            for target_idx, target_path in enumerate(target_paths):
+                target_group = self.target_groups[target_path]
+
+                # Check compatibility
+                if not source_group.is_compatible_with_mode(target_group, self.buffer_matching_mode):
+                    continue
+
+                # Verify param_names match
+                common_types = source_group.param_types & target_group.param_types
+                verification_failed = False
+                for param_type in common_types:
+                    source_param = source_group.params[param_type]
+                    target_param = target_group.params[param_type]
+                    if source_param.param_name != target_param.param_name:
+                        verification_failed = True
+                        break
+
+                if verification_failed:
+                    continue
+
+                # Compute scores
+                target_metadata = self.hierarchy_analyzer.extract_hierarchy_metadata(target_path)
+                structure_score = self.hierarchy_analyzer.compute_hierarchy_structure_score(
+                    source_metadata, target_metadata
+                )
+                base_score = self.scorer.compute_group_similarity(
+                    source_group, target_group, weights, {}, self.hierarchy_analyzer
+                )
+
+                combined_score = 0.6 * structure_score + 0.4 * base_score
+
+                # Store cost (similarity to cost conversion)
+                cost_matrix[source_idx, target_idx] = 1.0 - combined_score
+
+                # Build param type shapes
+                param_type_shapes = {}
+                for param_type in common_types:
+                    source_param = source_group.params[param_type]
+                    target_param = target_group.params[param_type]
+                    param_type_shapes[param_type] = (source_param.shape, target_param.shape)
+
+                # Store metadata
+                pair_metadata[(source_idx, target_idx)] = {
+                    "target_metadata": target_metadata,
+                    "combined_score": combined_score,
+                    "structure_score": structure_score,
+                    "base_score": base_score,
+                    "common_types": common_types,
+                    "param_type_shapes": param_type_shapes,
+                }
+
+        # Phase 2: Run Hungarian algorithm
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+        # Phase 3: Build results from optimal assignment
+        group_mapping = {}
+
+        for source_idx, target_idx in zip(row_ind, col_ind, strict=False):
+            source_path = source_paths[source_idx]
+            target_path = target_paths[target_idx]
+            source_metadata = self.hierarchy_analyzer.extract_hierarchy_metadata(source_path)
+
+            # Check if this assignment is valid (not a dummy assignment with high cost)
+            if (source_idx, target_idx) not in pair_metadata:
+                # No valid match for this source
+                result = GroupMatchResult(
+                    source_path=source_path,
+                    target_path=None,
+                    combined_score=0.0,
+                    structure_score=0.0,
+                    base_score=0.0,
+                    context_score=0.0,
+                    source_metadata=source_metadata,
+                    target_metadata=None,
+                    matched=False,
+                    unmatch_reason="no_compatible_target_group",
+                    param_types_matched=set(),
+                    param_type_shapes={},
+                )
+                results.append(result)
+                continue
+
+            metadata = pair_metadata[(source_idx, target_idx)]
+            combined_score = metadata["combined_score"]
+
+            # Apply threshold
+            if combined_score < threshold:
+                result = GroupMatchResult(
+                    source_path=source_path,
+                    target_path=None,
+                    combined_score=0.0,
+                    structure_score=0.0,
+                    base_score=0.0,
+                    context_score=0.0,
+                    source_metadata=source_metadata,
+                    target_metadata=None,
+                    matched=False,
+                    unmatch_reason=f"score_below_threshold_{threshold}",
+                    param_types_matched=set(),
+                    param_type_shapes={},
+                )
+                results.append(result)
+                continue
+
+            # Compute context score with current group_mapping
+            context_score = self.hierarchy_analyzer.compute_hierarchy_context_score(
+                source_path, target_path, group_mapping
+            )
+
+            result = GroupMatchResult(
+                source_path=source_path,
+                target_path=target_path,
+                combined_score=combined_score,
+                structure_score=metadata["structure_score"],
+                base_score=metadata["base_score"],
+                context_score=context_score,
+                source_metadata=source_metadata,
+                target_metadata=metadata["target_metadata"],
+                matched=True,
+                unmatch_reason=None,
+                param_types_matched=metadata["common_types"],
+                param_type_shapes=metadata["param_type_shapes"],
+            )
+
+            group_mapping[source_path] = target_path
             results.append(result)
 
         return results

@@ -51,9 +51,7 @@ class ParameterExtractor:
 
         params = {}
 
-        # Extract parameters (trainable weights/biases)
         for name, param in module.named_parameters():
-            # Get module path from parameter name (remove last component which is the param type)
             module_path = ".".join(name.split(".")[:-1])
             execution_order = execution_order_map.get(module_path, None)
             params[name] = ParameterInfo(
@@ -64,8 +62,6 @@ class ParameterExtractor:
                 requires_grad=param.requires_grad,
             )
 
-        # Also extract buffers (running_mean, running_var, num_batches_tracked, etc.)
-        # This ensures consistency with state_dict which includes both parameters and buffers
         for name, buffer in module.named_buffers():
             module_path = ".".join(name.split(".")[:-1])
             execution_order = execution_order_map.get(module_path, None)
@@ -91,7 +87,6 @@ class ParameterExtractor:
         params = {}
         for name, tensor in state_dict.items():
             if isinstance(tensor, torch.Tensor):
-                # Infer if this is likely a buffer based on name
                 param_name = name.split(".")[-1]
                 is_buffer = param_name in {
                     "running_mean",
@@ -123,12 +118,11 @@ class ParameterExtractor:
         Raises:
             RuntimeError: If forward pass fails with the provided dummy_input
         """
-        # Validate that dummy_input is compatible with module
         try:
             module.eval()
             with torch.no_grad():
                 test_output = module(dummy_input)
-            del test_output  # Free memory
+            del test_output
         except Exception as e:
             raise RuntimeError(
                 f"Failed to run forward pass with provided dummy_input. "
@@ -137,12 +131,11 @@ class ParameterExtractor:
             ) from e
 
         execution_order = {}
-        order_counter = [0]  # Use list to allow modification in closure
+        order_counter = [0]
 
-        # Register hooks on all named modules
         hooks = []
         for name, submodule in module.named_modules():
-            if name == "":  # Skip the root module
+            if name == "":
                 continue
 
             def hook(module, input, output, module_name=name):
@@ -152,12 +145,10 @@ class ParameterExtractor:
 
             hooks.append(submodule.register_forward_hook(hook))
 
-        # Run forward pass with provided dummy input
         module.eval()
         with torch.no_grad():
             module(dummy_input)
 
-        # Remove all hooks
         for h in hooks:
             h.remove()
 
@@ -185,7 +176,6 @@ class ParameterExtractor:
 
             groups_dict[module_path][param_type] = info
 
-        # Convert to ParameterGroup objects
         groups = {}
         for module_path, param_dict in groups_dict.items():
             groups[module_path] = ParameterGroup(module_path, param_dict)

@@ -17,6 +17,7 @@ from lit_wsl.mapper.result_types import (
     ParameterMatchResult,
     ScoreBreakdown,
     TransformationInfo,
+    ValidationMetrics,
 )
 from lit_wsl.mapper.similarity_scorer import SimilarityScorer
 from lit_wsl.models.checkpoint import extract_state_dict
@@ -120,12 +121,9 @@ class WeightMapper:
         self.buffer_matching_mode = buffer_matching_mode
         self.dummy_input = dummy_input
 
-        # Initialize modular components
         self.extractor = ParameterExtractor()
         self.scorer = SimilarityScorer(shape_tolerance=shape_tolerance, buffer_matching_mode=buffer_matching_mode)
         self.hierarchy_analyzer = HierarchyAnalyzer(incompatible_pairs=incompatible_pairs)
-
-        # Extract parameter information
         if source_params is not None:
             self.source_params = self._prepare_params(source_params)
         elif source_module is not None:
@@ -140,21 +138,16 @@ class WeightMapper:
         else:
             raise ValueError("Either target_module or target_params must be provided")
 
-        # Build shape index for fast lookups
         self.target_by_shape = self.extractor.build_shape_index(self.target_params)
 
-        # Extract parameter groups
         self.source_groups = self.extractor.extract_parameter_groups(self.source_params)
         self.target_groups = self.extractor.extract_parameter_groups(self.target_params)
 
-        # Build hierarchical structure
         self.source_hierarchy = self.hierarchy_analyzer.build_hierarchy(self.source_groups)
         self.target_hierarchy = self.hierarchy_analyzer.build_hierarchy(self.target_groups)
 
-        # Build group index by parameter types for fast lookups
         self.target_groups_by_types = self.extractor.build_group_index(self.target_groups)
 
-        # Storage for mapping results
         self._result: MappingResult | None = None
 
     def _prepare_params(self, params: dict[str, ParameterInfo] | dict[str, Any]) -> dict[str, ParameterInfo]:
@@ -167,15 +160,12 @@ class WeightMapper:
         Returns:
             dict[str, ParameterInfo]: Extracted parameter information
         """
-        # Check if already ParameterInfo objects
         if params and isinstance(next(iter(params.values())), ParameterInfo):
             return params
 
-        # It's a raw checkpoint or state_dict, extract it
         try:
             actual_state_dict = extract_state_dict(params)
         except ValueError:
-            # Assume it's already a state dict
             actual_state_dict = params
 
         state_dict = self.extractor.extract_from_state_dict(actual_state_dict)
@@ -234,10 +224,321 @@ class WeightMapper:
             incompatible_pairs=incompatible_pairs,
         )
 
+    def _infer_input_shape_from_weights(self, module: nn.Module) -> torch.Tensor | None:
+        """Infer input shape from the first layer's weights.
+
+        Args:
+            module: Module to analyze
+
+        Returns:
+            Dummy tensor with inferred shape, or None if inference fails
+        """
+        try:
+            # Find the first genuine input layer (skip containers)
+            def find_first_layer(mod: nn.Module, prefix: str = "") -> tuple[str, nn.Module] | None:
+                for name, child in mod.named_children():
+                    full_name = f"{prefix}.{name}" if prefix else name
+
+                    # Skip container modules
+                    if isinstance(child, (nn.Sequential, nn.ModuleList, nn.ModuleDict)):
+                        result = find_first_layer(child, full_name)
+                        if result:
+                            return result
+                    # Check if this is an input layer
+                    elif hasattr(child, "weight") and child.weight is not None:
+                        return full_name, child
+                    # Recursively check children
+                    else:
+                        result = find_first_layer(child, full_name)
+                        if result:
+                            return result
+                return None
+
+            first_layer_info = find_first_layer(module)
+            if not first_layer_info:
+                return None
+
+            layer_name, first_layer = first_layer_info
+            weight_shape = first_layer.weight.shape
+
+            # Infer based on layer type
+            if isinstance(first_layer, nn.Conv2d):
+                # Conv2d weight shape: (out_channels, in_channels, kernel_h, kernel_w)
+                in_channels = weight_shape[1]
+                spatial_size = 224  # Default image size
+                inferred_shape = (1, in_channels, spatial_size, spatial_size)
+                self.logger.info(
+                    f"Inferred input shape {inferred_shape} from Conv2d layer '{layer_name}' "
+                    f"with weight shape {weight_shape}"
+                )
+                return torch.randn(inferred_shape)
+
+            elif isinstance(first_layer, nn.Conv1d):
+                # Conv1d weight shape: (out_channels, in_channels, kernel_size)
+                in_channels = weight_shape[1]
+                sequence_length = 32  # Default sequence length
+                inferred_shape = (1, in_channels, sequence_length)
+                self.logger.info(
+                    f"Inferred input shape {inferred_shape} from Conv1d layer '{layer_name}' "
+                    f"with weight shape {weight_shape}"
+                )
+                return torch.randn(inferred_shape)
+
+            elif isinstance(first_layer, nn.Conv3d):
+                # Conv3d weight shape: (out_channels, in_channels, kernel_d, kernel_h, kernel_w)
+                in_channels = weight_shape[1]
+                spatial_size = 16  # Default 3D spatial size
+                inferred_shape = (1, in_channels, spatial_size, spatial_size, spatial_size)
+                self.logger.info(
+                    f"Inferred input shape {inferred_shape} from Conv3d layer '{layer_name}' "
+                    f"with weight shape {weight_shape}"
+                )
+                return torch.randn(inferred_shape)
+
+            elif isinstance(first_layer, nn.Linear):
+                # Linear weight shape: (out_features, in_features)
+                in_features = weight_shape[1]
+                inferred_shape = (1, in_features)
+                self.logger.info(
+                    f"Inferred input shape {inferred_shape} from Linear layer '{layer_name}' "
+                    f"with weight shape {weight_shape}"
+                )
+                return torch.randn(inferred_shape)
+
+            elif isinstance(first_layer, nn.Embedding):
+                # Embedding layer - use default sequence length
+                sequence_length = 32
+                inferred_shape = (1, sequence_length)
+                self.logger.info(f"Inferred input shape {inferred_shape} from Embedding layer '{layer_name}'")
+                return torch.randint(0, weight_shape[0], inferred_shape)
+
+            else:
+                self.logger.warning(f"Unable to infer input shape from layer type {type(first_layer).__name__}")
+                return None
+
+        except Exception as e:
+            self.logger.warning(f"Failed to infer input shape: {e}")
+            return None
+
+    def _validate_outputs(
+        self,
+        source_module: nn.Module,
+        target_module: nn.Module,
+        dummy_input: torch.Tensor,
+        mapping: dict[str, str],
+    ) -> ValidationMetrics:
+        """Validate that mapped weights produce similar outputs.
+
+        Args:
+            source_module: Source model
+            target_module: Target model
+            dummy_input: Input tensor for forward pass
+            mapping: Suggested parameter mapping
+
+        Returns:
+            ValidationMetrics with comparison results
+        """
+        try:
+            source_module.eval()
+            target_module.eval()
+
+            with torch.no_grad():
+                source_output = source_module(dummy_input)
+
+            import copy
+
+            target_copy = copy.deepcopy(target_module)
+            source_state = source_module.state_dict()
+            target_state = target_copy.state_dict()
+
+            for source_name, target_name in mapping.items():
+                if source_name in source_state and target_name in target_state:
+                    target_state[target_name] = source_state[source_name]
+
+            target_copy.load_state_dict(target_state, strict=False)
+
+            with torch.no_grad():
+                target_output = target_copy(dummy_input)
+
+            if isinstance(source_output, tuple):
+                source_output = source_output[0]
+            if isinstance(target_output, tuple):
+                target_output = target_output[0]
+
+            source_flat = source_output.flatten()
+            target_flat = target_output.flatten()
+
+            cosine_sim = float(
+                torch.nn.functional.cosine_similarity(source_flat.unsqueeze(0), target_flat.unsqueeze(0)).item()
+            )
+            mse = float(torch.nn.functional.mse_loss(source_flat, target_flat).item())
+            max_diff = float(torch.max(torch.abs(source_flat - target_flat)).item())
+
+            validation_passed = cosine_sim >= 0.95
+
+            return ValidationMetrics(
+                output_cosine_sim=cosine_sim,
+                output_mse=mse,
+                output_max_diff=max_diff,
+                validation_passed=validation_passed,
+                error_message=None,
+            )
+
+        except Exception as e:
+            self.logger.warning(f"Output validation failed: {e}")
+            return ValidationMetrics(
+                output_cosine_sim=None,
+                output_mse=None,
+                output_max_diff=None,
+                validation_passed=False,
+                error_message=str(e),
+            )
+
+    def _generate_transformation_code(
+        self, source_info: ParameterInfo, target_info: ParameterInfo, transformation: TransformationInfo | None
+    ) -> str | None:
+        """Generate executable Python code for tensor transformation.
+
+        Args:
+            source_info: Source parameter info
+            target_info: Target parameter info
+            transformation: Transformation info (if any)
+
+        Returns:
+            Python code string or None if no transformation needed
+        """
+        if transformation is None:
+            return None
+
+        source_shape = source_info.shape
+        target_shape = target_info.shape
+
+        if transformation.type == "transpose":
+            if len(source_shape) == 2:
+                return "target_weight = source_weight.transpose(0, 1)"
+            elif len(source_shape) == 4:
+                if source_shape[0] == target_shape[0] and source_shape[1] == target_shape[1]:
+                    # Spatial dimensions transposed
+                    return "target_weight = source_weight.transpose(2, 3)"
+                elif source_shape[0] == target_shape[1] and source_shape[1] == target_shape[0]:
+                    # Channel dimensions transposed
+                    return "target_weight = source_weight.transpose(0, 1)"
+                else:
+                    # Complex permutation - generate generic code
+                    return f"# Manual permutation needed: {source_shape} -> {target_shape}"
+            else:
+                return f"# Transpose needed: {source_shape} -> {target_shape}"
+
+        elif transformation.type == "reshape":
+            # Generate reshape code
+            target_shape_str = ", ".join(str(dim) for dim in target_shape)
+            return f"target_weight = source_weight.reshape({target_shape_str})"
+
+        return None
+
+    def _compute_confidence_and_alternatives(
+        self,
+        parameter_results: list[ParameterMatchResult],
+        weights: dict[str, float],
+    ) -> list[ParameterMatchResult]:
+        """Compute confidence scores and alternative matches for each parameter.
+
+        Confidence is based on the score gap between the best match and second-best match.
+        A large gap indicates high confidence, while a small gap suggests ambiguity.
+
+        Args:
+            parameter_results: List of parameter matches
+            weights: Scoring weights used
+
+        Returns:
+            Updated list of parameter matches with confidence and alternatives
+        """
+        updated_results = []
+
+        for param_result in parameter_results:
+            if not param_result.matched:
+                # Unmatched parameters have no alternatives
+                updated_results.append(param_result)
+                continue
+
+            source_name = param_result.source_name
+            source_info = self.source_params[source_name]
+            matched_target = param_result.target_name
+
+            # Find all compatible targets and score them
+            scored_candidates = []
+            for target_name, target_info in self.target_params.items():
+                # Skip if shapes don't match (required for compatibility)
+                if source_info.shape != target_info.shape:
+                    # Check for transposed shapes
+                    if len(source_info.shape) == 2 and source_info.shape[::-1] == target_info.shape:
+                        pass  # Allow transposed
+                    else:
+                        continue
+
+                # Skip if param types don't match
+                if source_info.param_name != target_info.param_name:
+                    continue
+
+                # Compute score
+                score_breakdown = self.scorer.compute_composite_score(
+                    source_info, target_info, weights, None, self.hierarchy_analyzer
+                )
+
+                scored_candidates.append((target_name, score_breakdown.composite_score))
+
+            # Sort by score descending
+            scored_candidates.sort(key=lambda x: x[1], reverse=True)
+
+            # Compute confidence
+            if len(scored_candidates) >= 2:
+                best_score = scored_candidates[0][1]
+                second_best_score = scored_candidates[1][1]
+                score_gap = best_score - second_best_score
+
+                # Normalize confidence: gap of 0.3 or more = full confidence
+                confidence = min(1.0, score_gap / 0.3)
+            else:
+                # Only one candidate - high confidence
+                confidence = 1.0
+
+            # Get top 3-5 alternatives (excluding the matched one)
+            alternatives = [(target, score) for target, score in scored_candidates if target != matched_target][:5]
+
+            # Generate transformation code if needed
+            transformation_code = None
+            if matched_target is not None:
+                transformation_code = self._generate_transformation_code(
+                    source_info, self.target_params[matched_target], param_result.transformation
+                )
+
+            # Create updated result with confidence and alternatives
+            updated_result = ParameterMatchResult(
+                source_name=param_result.source_name,
+                target_name=param_result.target_name,
+                score_breakdown=param_result.score_breakdown,
+                final_score=param_result.final_score,
+                matched=param_result.matched,
+                unmatch_reason=param_result.unmatch_reason,
+                match_type=param_result.match_type,
+                transformation=param_result.transformation,
+                source_module_path=param_result.source_module_path,
+                target_module_path=param_result.target_module_path,
+                confidence_score=confidence,
+                alternative_matches=alternatives,
+                transformation_code=transformation_code,
+            )
+
+            updated_results.append(updated_result)
+
+        return updated_results
+
     def suggest_mapping(
         self,
         threshold: float | None = None,
         weights: dict[str, float] | None = None,
+        validate_outputs: bool = True,
+        strategy: str = "greedy",
     ) -> MappingResult:
         """Generate suggested parameter name mapping with full transparency.
 
@@ -251,16 +552,26 @@ class WeightMapper:
                       Recommended values: 0.5-0.7 for typical use cases.
             weights: Custom weights for scoring components
                      Default: {'shape': 0.4, 'name': 0.1, 'hierarchy': 0.5}
+            validate_outputs: Whether to validate mapped weights by comparing outputs (default: True).
+                            Requires both source and target modules. If dummy_input is not provided,
+                            will attempt to infer input shape from source model weights.
+            strategy: Matching strategy to use. Options:
+                     - 'greedy': Fast greedy selection (current default for backward compatibility)
+                     - 'optimal': Global optimization using Hungarian algorithm (recommended)
 
         Returns:
             MappingResult with complete information about all matches, scores,
-            and transparency data
+            transparency data, and optional output validation metrics
 
         Example:
             >>> mapper = WeightMapper(source_model, target_model)
             >>> result = mapper.suggest_mapping(threshold=0.6)
             >>> # Access simple mapping
             >>> mapping_dict = result.get_mapping()
+            >>> # Check validation results
+            >>> if result.output_validation:
+            ...     print(f"Validation passed: {result.output_validation.validation_passed}")
+            ...     print(f"Cosine similarity: {result.output_validation.output_cosine_sim:.4f}")
             >>> # Inspect low confidence matches
             >>> low_conf = result.get_low_confidence_matches(0.7)
             >>> for match in low_conf:
@@ -269,10 +580,6 @@ class WeightMapper:
             ...         f"  Score breakdown: shape={match.score_breakdown.shape_score:.2f}, "
             ...         f"name={match.score_breakdown.name_score:.2f}"
             ...     )
-            >>> # Access all scored details
-            >>> for param_name, match_result in result.parameter_matches.items():
-            ...     if match_result.matched:
-            ...         print(f"{param_name}: {match_result.final_score:.3f}")
         """
         # Set default threshold
         if threshold is None:
@@ -280,6 +587,18 @@ class WeightMapper:
 
         if weights is None:
             weights = {"shape": 0.4, "name": 0.1, "hierarchy": 0.5}
+
+        # Try to infer dummy_input if not provided and validation is requested
+        dummy_input_for_validation = self.dummy_input
+        if validate_outputs and self.source_module and self.target_module and dummy_input_for_validation is None:
+            self.logger.info("Attempting to infer input shape from source model weights...")
+            dummy_input_for_validation = self._infer_input_shape_from_weights(self.source_module)
+            if dummy_input_for_validation is None:
+                self.logger.warning(
+                    "Could not infer input shape. Output validation will be skipped. "
+                    "Provide dummy_input explicitly for validation."
+                )
+                validate_outputs = False
 
         # Log warning if no execution order available
         has_execution_order = any(p.execution_order is not None for p in self.source_params.values()) and any(
@@ -305,7 +624,7 @@ class WeightMapper:
         )
 
         # Phase 1: Group-based matching
-        group_results = mapping_strategy.suggest_group_mapping(threshold, weights)
+        group_results = mapping_strategy.suggest_group_mapping(threshold, weights, strategy=strategy)
 
         # Build group mapping dict for tracking
         group_mapping = {gr.source_path: gr.target_path for gr in group_results if gr.matched}
@@ -363,6 +682,9 @@ class WeightMapper:
             )
             parameter_results.extend(individual_results)
 
+        # Phase 3.5: Compute confidence scores and alternatives
+        parameter_results = self._compute_confidence_and_alternatives(parameter_results, weights)
+
         # Phase 4: Build MappingResult
         # Create a lookup dict for results
         results_by_source = {r.source_name: r for r in parameter_results}
@@ -384,6 +706,28 @@ class WeightMapper:
 
         coverage = len(matched_params) / len(self.source_params) if self.source_params else 0.0
 
+        # Phase 5: Output validation (if requested and possible)
+        validation_metrics = None
+        if validate_outputs and self.source_module and self.target_module and dummy_input_for_validation is not None:
+            self.logger.info("Validating mapped weights by comparing model outputs...")
+            mapping_dict = {r.source_name: r.target_name for r in matched_params if r.target_name}
+            validation_metrics = self._validate_outputs(
+                self.source_module, self.target_module, dummy_input_for_validation, mapping_dict
+            )
+
+            if validation_metrics.validation_passed:
+                self.logger.info(
+                    f"✓ Output validation PASSED (cosine similarity: {validation_metrics.output_cosine_sim:.4f})"
+                )
+            else:
+                if validation_metrics.error_message:
+                    self.logger.warning(f"✗ Output validation FAILED: {validation_metrics.error_message}")
+                else:
+                    self.logger.warning(
+                        f"✗ Output validation FAILED (cosine similarity: {validation_metrics.output_cosine_sim:.4f}, "
+                        f"threshold: 0.95). This may indicate incorrect parameter mapping."
+                    )
+
         result = MappingResult(
             parameter_matches=parameter_matches,
             group_matches=group_matches,
@@ -393,6 +737,8 @@ class WeightMapper:
             coverage=coverage,
             threshold=threshold,
             weights=weights,
+            output_validation=validation_metrics,
+            strategy=strategy,
         )
 
         # Store result

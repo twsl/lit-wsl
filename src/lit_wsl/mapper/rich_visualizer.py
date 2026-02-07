@@ -76,15 +76,12 @@ def render_hierarchy_tree(
     matched_paths = matched_paths or set()
 
     def add_node_to_tree(node: ModuleNode, parent_tree: Tree, current_depth: int = 0) -> None:
-        """Recursively add nodes to the tree."""
         if max_depth is not None and current_depth > max_depth:
             return
 
-        # Build node label
         node_name = node.name or "ROOT"
         is_matched = node.full_path in matched_paths
 
-        # Add parameter type badges
         param_info = ""
         if node.parameter_group:
             param_types = sorted(node.parameter_group.param_types)
@@ -98,7 +95,6 @@ def render_hierarchy_tree(
                     badges.append(f"[dim]{ptype[0].upper()}[/dim]")
             param_info = f" [{''.join(badges)}]"
 
-            # Add shape information if requested
             if show_shapes and node.parameter_group.params:
                 shapes = []
                 for ptype in param_types:
@@ -108,7 +104,6 @@ def render_hierarchy_tree(
                 if shapes:
                     param_info += f" [dim]({', '.join(shapes)})[/dim]"
 
-        # Style based on match status
         if is_matched:
             label = f"[bold green]✓ {node_name}[/bold green]{param_info}"
         elif node.parameter_group:
@@ -116,15 +111,12 @@ def render_hierarchy_tree(
         else:
             label = f"[dim]{node_name}[/dim]{param_info}"
 
-        # Add to tree
         branch = parent_tree.add(label)
 
-        # Recursively add children (sorted by name for consistency)
         for child_name in sorted(node.children.keys()):
             child = node.children[child_name]
             add_node_to_tree(child, branch, current_depth + 1)
 
-    # Build tree starting from root's children
     if root.children:
         for child_name in sorted(root.children.keys()):
             child = root.children[child_name]
@@ -146,11 +138,9 @@ def render_summary_panel(result: MappingResult, source_count: int, target_count:
     Returns:
         Rich Panel with summary information
     """
-    # Create summary text
     matched = len(result.matched_params)
     coverage_pct = result.coverage * 100
 
-    # Color-code coverage
     if coverage_pct >= 90:
         coverage_color = "green"
     elif coverage_pct >= 70:
@@ -173,7 +163,6 @@ def render_summary_panel(result: MappingResult, source_count: int, target_count:
     summary_text.append("Threshold: ", style="bold")
     summary_text.append(f"{result.threshold:.2f}\n", style="dim")
 
-    # Add score component weights
     if result.weights:
         summary_text.append("\nWeights: ", style="bold")
         weight_parts = [f"{k}={v:.2f}" for k, v in result.weights.items()]
@@ -203,7 +192,6 @@ def render_mapping_table(
     """
     table = Table(title="[bold]Parameter Mappings[/bold]", show_header=True, header_style="bold magenta")
 
-    # Add columns
     table.add_column("Source", style="cyan", no_wrap=False, max_width=40)
     table.add_column("Target", style="cyan", no_wrap=False, max_width=40)
     if show_scores:
@@ -213,32 +201,27 @@ def render_mapping_table(
         table.add_column("Transform", justify="center", width=10)
     table.add_column("Type", justify="center", width=8)
 
-    # Get matches and optionally sort
     matches = result.matched_params
     if sort_by_score:
         matches = sorted(matches, key=lambda x: x.final_score, reverse=True)
 
-    # Apply row limit
     if max_rows is not None:
         matches = matches[:max_rows]
         rows_hidden = len(result.matched_params) - max_rows
     else:
         rows_hidden = 0
 
-    # Add rows
     for match in matches:
         source_name = match.source_name
         target_name = match.target_name or "N/A"
         score = match.final_score
         score_color = get_score_color(score)
 
-        # Get shape info
         if match.transformation and match.transformation.type != "none":
             shape_info = f"{match.transformation.source_shape} → {match.transformation.target_shape}"
         else:
             shape_info = str(match.transformation.source_shape if match.transformation else "")
 
-        # Build row
         row = [source_name, target_name]
         if show_scores:
             row.append(f"[{score_color}]{score:.3f}[/{score_color}]")

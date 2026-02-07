@@ -32,7 +32,6 @@ def load_checkpoint(checkpoint_path: str) -> dict:
     except Exception as e:
         raise RuntimeError(f"Failed to load checkpoint: {e}") from e
 
-    # Extract state_dict if checkpoint is wrapped
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         return checkpoint["state_dict"]
     return checkpoint
@@ -87,23 +86,19 @@ def cmd_visualize_hierarchy(args: argparse.Namespace) -> int:
     from lit_wsl.mapper.weight_mapper import WeightMapper
 
     try:
-        # Load checkpoint
         state_dict = load_checkpoint(args.checkpoint)
 
-        # Load or create target model
         if args.model:
             model_class = load_model_class(args.model)
             target_model = model_class()
         else:
             target_model = None
 
-        # Create mapper
         mapper = WeightMapper.from_state_dict(
             source_state_dict=state_dict,
             target_module=target_model,
         )
 
-        # Visualize hierarchy
         if args.side == "both" or args.side == "source":
             from rich.console import Console
 
@@ -120,7 +115,7 @@ def cmd_visualize_hierarchy(args: argparse.Namespace) -> int:
             console.print(tree)
 
         if args.side == "both" and target_model:
-            print()  # Spacer
+            print()
 
         if args.side == "both" or args.side == "target":
             if target_model is None:
@@ -141,7 +136,6 @@ def cmd_visualize_hierarchy(args: argparse.Namespace) -> int:
             )
             console.print(tree)
 
-        # Save to file if requested
         if args.output:
             console = Console(record=True)
             tree = render_hierarchy_tree(
@@ -178,23 +172,17 @@ def cmd_visualize_mapping(args: argparse.Namespace) -> int:
     from lit_wsl.mapper.weight_mapper import WeightMapper
 
     try:
-        # Load checkpoint
         state_dict = load_checkpoint(args.checkpoint)
 
-        # Load target model
         model_class = load_model_class(args.model)
         target_model = model_class()
 
-        # Create mapper
         mapper = WeightMapper.from_state_dict(
             source_state_dict=state_dict,
             target_module=target_model,
         )
 
-        # Suggest mapping
         result = mapper.suggest_mapping(threshold=args.threshold)
-
-        # Visualize results
         mapper.visualize_mapping(
             result=result,
             show_unmatched=args.show_unmatched,
@@ -202,7 +190,6 @@ def cmd_visualize_mapping(args: argparse.Namespace) -> int:
             max_unmatched=args.max_unmatched,
         )
 
-        # Save to file if requested
         if args.output:
             from rich.console import Console
 
@@ -249,20 +236,15 @@ def cmd_analyze_mapping(args: argparse.Namespace) -> int:
     from lit_wsl.mapper.weight_mapper import WeightMapper
 
     try:
-        # Load checkpoint
         state_dict = load_checkpoint(args.checkpoint)
 
-        # Load target model
         model_class = load_model_class(args.model)
         target_model = model_class()
 
-        # Create mapper
         mapper = WeightMapper.from_state_dict(
             source_state_dict=state_dict,
             target_module=target_model,
         )
-
-        # Show hierarchies if requested
         if args.show_hierarchy:
             print("\n" + "=" * 80)
             print("MODEL HIERARCHIES")
@@ -272,10 +254,8 @@ def cmd_analyze_mapping(args: argparse.Namespace) -> int:
                 max_depth=args.max_depth,
             )
 
-        # Suggest mapping
         result = mapper.suggest_mapping(threshold=args.threshold)
 
-        # Show mapping results
         print("\n" + "=" * 80)
         print("MAPPING ANALYSIS")
         print("=" * 80)
@@ -286,7 +266,6 @@ def cmd_analyze_mapping(args: argparse.Namespace) -> int:
             max_unmatched=args.max_unmatched,
         )
 
-        # Show matched hierarchies if requested
         if args.show_hierarchy:
             print("\n" + "=" * 80)
             print("MATCHED HIERARCHIES")

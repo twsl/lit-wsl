@@ -31,6 +31,25 @@ class HierarchyAnalyzer:
         # By default, allow all matches - users can provide explicit restrictions if needed
         self.incompatible_pairs = incompatible_pairs if incompatible_pairs is not None else []
 
+        # Semantic equivalents: components with similar meanings
+        self.semantic_equivalents = {
+            "encoder": {"backbone", "feature_extractor", "stem", "features"},
+            "backbone": {"encoder", "feature_extractor", "stem", "features"},
+            "decoder": {"head", "classifier", "predictor", "output"},
+            "head": {"decoder", "classifier", "predictor", "output"},
+            "feature_extractor": {"encoder", "backbone", "stem", "features"},
+            "classifier": {"head", "decoder", "predictor", "output"},
+            "attention": {"attn", "self_attention", "msa"},
+            "attn": {"attention", "self_attention", "msa"},
+            "feedforward": {"ff", "ffn", "mlp"},
+            "ff": {"feedforward", "ffn", "mlp"},
+            "ffn": {"feedforward", "ff", "mlp"},
+            "mlp": {"feedforward", "ff", "ffn"},
+            "norm": {"normalization", "ln", "bn", "layernorm", "batchnorm"},
+            "bn": {"batchnorm", "batch_norm", "norm"},
+            "ln": {"layernorm", "layer_norm", "norm"},
+        }
+
     def build_hierarchy(self, groups: dict[str, ParameterGroup]) -> ModuleNode:
         """Build a hierarchical tree structure from parameter groups.
 
@@ -43,16 +62,14 @@ class HierarchyAnalyzer:
         root = ModuleNode("", "", 0)
         nodes: dict[str, ModuleNode] = {"": root}
 
-        # Sort paths to ensure parents are created before children
         sorted_paths = sorted(groups.keys(), key=lambda x: (x.count("."), x))
 
         for module_path in sorted_paths:
-            if not module_path:  # Skip empty path
+            if not module_path:
                 continue
 
             parts = module_path.split(".")
 
-            # Create all intermediate nodes if they don't exist
             for i in range(1, len(parts) + 1):
                 partial_path = ".".join(parts[:i])
                 if partial_path not in nodes:
@@ -62,7 +79,6 @@ class HierarchyAnalyzer:
                     parent_node.add_child(new_node)
                     nodes[partial_path] = new_node
 
-            # Attach parameter group to the leaf node
             if module_path in groups:
                 nodes[module_path].parameter_group = groups[module_path]
 
@@ -97,10 +113,7 @@ class HierarchyAnalyzer:
             target_parent = ".".join(target_parts[:i])
 
             if source_parent in group_mapping and group_mapping[source_parent] == target_parent:
-                # Parent is mapped correctly - strong bonus
-                parent_match_bonus += 0.3 / i  # Closer parents get higher weight
-
-        # Check structural similarity (same depth, similar position)
+                parent_match_bonus += 0.3 / i
         depth_match = 1.0 if len(source_parts) == len(target_parts) else 0.5
 
         # Combine scores
@@ -121,18 +134,13 @@ class HierarchyAnalyzer:
         Returns:
             Set of lowercase chunks
         """
-        # First, split by underscores
         parts = name.split("_")
 
-        # Then split each part by camelCase and numbers
         chunks = []
         for part in parts:
-            # Split on camelCase boundaries and numbers
-            # This handles: YoloHead -> ['Yolo', 'Head'], stage1 -> ['stage', '1']
             split_parts = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)|\d+", part)
             chunks.extend(split_parts)
 
-        # Convert to lowercase and return as set
         return {chunk.lower() for chunk in chunks if chunk}
 
     def are_modules_semantically_equivalent(self, module1: str, module2: str) -> bool:
@@ -144,35 +152,111 @@ class HierarchyAnalyzer:
         - 'backbone' <-> 'Backbone' (exact match, case-insensitive)
         - 'fpn' <-> 'feature_pyramid_network' (fpn chunk matches)
 
+        Now also considers semantic equivalents (e.g., backbone <-> encoder).
+
         Args:
             module1: First module name
             module2: Second module name
 
         Returns:
-            True if modules are semantically equivalent
+            True if modules are semantically equivalent, with boosted score for semantic matches
         """
         if module1 == module2:
             return True
 
-        # Split both module names into chunks
         chunks1 = self.split_module_name_into_chunks(module1)
         chunks2 = self.split_module_name_into_chunks(module2)
-
-        # Check if this is an incompatible cross-component match
         for group1, group2 in self.incompatible_pairs:
             has_group1_in_first = bool(chunks1 & group1)
             has_group2_in_first = bool(chunks1 & group2)
             has_group1_in_second = bool(chunks2 & group1)
             has_group2_in_second = bool(chunks2 & group2)
 
-            # If module1 has chunks from group1 and module2 has chunks from group2 (or vice versa)
-            # then they're incompatible
             if (has_group1_in_first and has_group2_in_second) or (has_group2_in_first and has_group1_in_second):
                 return False
 
-        # Default: allow the match unless explicitly incompatible
-        # This is more permissive and allows arbitrary naming as long as they're not incompatible
         return True
+
+    def compute_semantic_similarity_boost(self, chunks1: set[str], chunks2: set[str]) -> float:
+        """Compute a similarity boost for semantically equivalent components.
+
+        Args:
+            chunks1: Chunks from first module path
+            chunks2: Chunks from second module path
+
+        Returns:
+            Boost factor (1.0 = no boost, 1.2 = 20% boost)
+        """
+        for chunk1 in chunks1:
+            if chunk1 in self.semantic_equivalents:
+                equivalent_chunks = self.semantic_equivalents[chunk1]
+                if chunks2 & equivalent_chunks:
+                    return 1.2
+
+        return 1.0
+
+    def check_numeric_sequence_consistency(self, mapping_dict: dict[str, str]) -> dict[str, float]:
+        """Check if numeric indices in mappings maintain sequential ordering.
+
+        For example, if stages.0 maps to blocks.0 and stages.1 maps to blocks.1,
+        the sequence is consistent. But if stages.0 maps to blocks.5 and stages.1
+        maps to blocks.3, it violates expected ordering.
+
+        Args:
+            mapping_dict: Dictionary of source_path -> target_path mappings
+
+        Returns:
+            Dictionary of source_path -> penalty (1.0 = no penalty, 0.3 = strong penalty)
+        """
+        penalties = {}
+
+        # Group mappings by common prefix
+        prefix_groups = {}
+        for source_path, target_path in mapping_dict.items():
+            # Extract prefix (everything before the last numeric index)
+            source_parts = source_path.split(".")
+            target_parts = target_path.split(".")
+
+            # Find the common prefix structure
+            source_prefix = ".".join(source_parts[:-1]) if len(source_parts) > 1 else ""
+            target_prefix = ".".join(target_parts[:-1]) if len(target_parts) > 1 else ""
+
+            key = (source_prefix, target_prefix)
+            if key not in prefix_groups:
+                prefix_groups[key] = []
+
+            # Extract numeric indices
+            source_indices = self.extract_numeric_indices(source_path)
+            target_indices = self.extract_numeric_indices(target_path)
+
+            if source_indices and target_indices:
+                prefix_groups[key].append((source_path, target_path, source_indices[-1], target_indices[-1]))
+
+        # Check ordering consistency within each group
+        for group_key, mappings in prefix_groups.items():
+            if len(mappings) < 2:
+                continue
+
+            # Sort by source index
+            sorted_mappings = sorted(mappings, key=lambda x: x[2] if x[2] is not None else -1)
+
+            # Check if target indices are also in order
+            prev_target_idx = None
+            ordering_violations = []
+
+            for source_path, target_path, source_idx, target_idx in sorted_mappings:
+                if source_idx is None or target_idx is None:
+                    continue
+
+                if prev_target_idx is not None:
+                    if target_idx < prev_target_idx:
+                        # Ordering violation!
+                        ordering_violations.append(source_path)
+                        penalties[source_path] = 0.3  # Strong penalty
+
+                prev_target_idx = target_idx
+
+        return penalties
 
     @staticmethod
     def extract_numeric_indices(path: str) -> list[int | None]:

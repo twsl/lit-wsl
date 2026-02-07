@@ -62,6 +62,25 @@ class ScoreBreakdown:
 
 
 @dataclass(frozen=True)
+class ValidationMetrics:
+    """Metrics from validating mapped weights by comparing model outputs.
+
+    Attributes:
+        output_cosine_sim: Cosine similarity between outputs (1.0 = identical direction)
+        output_mse: Mean squared error between outputs
+        output_max_diff: Maximum absolute difference between outputs
+        validation_passed: Whether validation passed (similarity >= 0.95)
+        error_message: Error message if validation failed to run (None if successful)
+    """
+
+    output_cosine_sim: float | None
+    output_mse: float | None
+    output_max_diff: float | None
+    validation_passed: bool
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class HierarchyMetadata:
     """Hierarchical structure information for a module path.
 
@@ -125,6 +144,9 @@ class ParameterMatchResult:
         transformation: Required transformation (None if shapes match exactly)
         source_module_path: Parent module path in source model
         target_module_path: Parent module path in target model (None if unmatched)
+        confidence_score: Confidence in this match based on score gap to alternatives (0.0-1.0)
+        alternative_matches: List of (target_name, score) tuples for next best alternatives
+        transformation_code: Executable Python code to apply transformation (None if not needed)
     """
 
     source_name: str
@@ -137,6 +159,9 @@ class ParameterMatchResult:
     transformation: TransformationInfo | None
     source_module_path: str
     target_module_path: str | None
+    confidence_score: float = 1.0
+    alternative_matches: list[tuple[str, float]] = field(default_factory=list)
+    transformation_code: str | None = None
 
     def __post_init__(self) -> None:
         """Validate consistency."""
@@ -206,16 +231,20 @@ class MappingResult:
     Attributes:
         parameter_matches: All parameter match results keyed by source name
         group_matches: All group match results keyed by source path
-        matched_params: List of successfully matched ParameterMatchResult objects
-        unmatched_params: List of unmatched ParameterMatchResult objects
-        unmatched_targets: List of target parameter names that weren't matched
-        coverage: Fraction of source parameters successfully matched (0.0-1.0)
-        threshold: Score threshold used for matching
-        weights: Score component weights used for matching
+        output_validation: Optional validation metrics from comparing model outputs
+        strategy: Matching strategy used ("greedy" or "optimal")
     """
 
     parameter_matches: dict[str, ParameterMatchResult]
     group_matches: dict[str, GroupMatchResult]
+    matched_params: list[ParameterMatchResult] = field(default_factory=list)
+    unmatched_params: list[ParameterMatchResult] = field(default_factory=list)
+    unmatched_targets: list[str] = field(default_factory=list)
+    coverage: float = 0.0
+    threshold: float = 0.0
+    weights: dict[str, float] = field(default_factory=dict)
+    output_validation: ValidationMetrics | None = None
+    strategy: str = "greedy"
     matched_params: list[ParameterMatchResult] = field(default_factory=list)
     unmatched_params: list[ParameterMatchResult] = field(default_factory=list)
     unmatched_targets: list[str] = field(default_factory=list)
@@ -230,7 +259,6 @@ class MappingResult:
             Dictionary mapping source parameter names to target parameter names
             (only includes successfully matched parameters), preserving source order
         """
-        # Build mapping from parameter_matches to preserve insertion order
         return {
             source_name: match.target_name
             for source_name, match in self.parameter_matches.items()
@@ -317,3 +345,161 @@ class MappingResult:
             List of matched parameters with scores below threshold
         """
         return [m for m in self.matched_params if m.final_score < threshold]
+
+    def generate_transformation_script(self) -> str:
+        """Generate complete Python script to apply all transformations.
+
+        Returns:
+            Executable Python code as string
+        """
+        script_lines = [
+            "# Auto-generated weight transformation script",
+            "import torch",
+            "",
+            "def transform_weights(source_state_dict):",
+            '    """Apply transformations to source weights."""',
+            "    transformed_state_dict = {}",
+            "",
+        ]
+
+        for match in self.matched_params:
+            if match.transformation_code:
+                script_lines.append(f"    # {match.source_name} -> {match.target_name}")
+                script_lines.append(f"    source_weight = source_state_dict['{match.source_name}']")
+                script_lines.append(f"    {match.transformation_code}")
+                script_lines.append(f"    transformed_state_dict['{match.target_name}'] = target_weight")
+                script_lines.append("")
+            elif match.matched:
+                # Direct copy, no transformation
+                script_lines.append(f"    # {match.source_name} -> {match.target_name} (direct copy)")
+                script_lines.append(
+                    f"    transformed_state_dict['{match.target_name}'] = source_state_dict['{match.source_name}']"
+                )
+                script_lines.append("")
+
+        script_lines.extend(
+            [
+                "    return transformed_state_dict",
+                "",
+                "# Usage:",
+                "# source_state = torch.load('source_weights.pth')",
+                "# transformed_state = transform_weights(source_state)",
+                "# target_model.load_state_dict(transformed_state, strict=False)",
+            ]
+        )
+
+        return "\n".join(script_lines)
+
+    def generate_validation_report(self) -> str:
+        """Generate comprehensive validation report.
+
+        Returns:
+            Formatted report string with all validation metrics
+        """
+        lines = [
+            "=" * 80,
+            "Weight Mapping Validation Report",
+            "=" * 80,
+            "",
+            f"Strategy: {self.strategy}",
+            f"Threshold: {self.threshold}",
+            f"Coverage: {self.coverage * 100:.1f}% ({len(self.matched_params)}/{len(self.parameter_matches)})",
+            "",
+        ]
+
+        # Output validation
+        if self.output_validation:
+            lines.append("Output Validation:")
+            if self.output_validation.validation_passed:
+                lines.append("  Status: ✓ PASSED")
+            else:
+                lines.append("  Status: ✗ FAILED")
+
+            if self.output_validation.error_message:
+                lines.append(f"  Error: {self.output_validation.error_message}")
+            else:
+                lines.append(f"  Cosine Similarity: {self.output_validation.output_cosine_sim:.4f}")
+                lines.append(f"  MSE: {self.output_validation.output_mse:.6f}")
+                lines.append(f"  Max Abs Diff: {self.output_validation.output_max_diff:.6f}")
+            lines.append("")
+
+        # Confidence distribution
+        if self.matched_params:
+            confidence_scores = [m.confidence_score for m in self.matched_params]
+            high_conf = sum(1 for c in confidence_scores if c >= 0.9)
+            med_conf = sum(1 for c in confidence_scores if 0.7 <= c < 0.9)
+            low_conf = sum(1 for c in confidence_scores if c < 0.7)
+
+            lines.extend(
+                [
+                    "Confidence Distribution:",
+                    f"  High (≥0.9): {high_conf} matches ({high_conf / len(confidence_scores) * 100:.1f}%)",
+                    f"  Medium (0.7-0.9): {med_conf} matches ({med_conf / len(confidence_scores) * 100:.1f}%)",
+                    f"  Low (<0.7): {low_conf} matches ({low_conf / len(confidence_scores) * 100:.1f}%)",
+                    "",
+                ]
+            )
+
+            # Low confidence matches
+            if low_conf > 0:
+                lines.extend(
+                    [
+                        "Low Confidence Matches (require review):",
+                        f"{'Source':<40} {'Target':<40} {'Score':>8} {'Conf':>6}",
+                        "-" * 96,
+                    ]
+                )
+                for match in sorted(self.matched_params, key=lambda m: m.confidence_score):
+                    if match.confidence_score < 0.7:
+                        lines.append(
+                            f"{match.source_name:<40} {match.target_name:<40} "
+                            f"{match.final_score:>8.3f} {match.confidence_score:>6.3f}"
+                        )
+                lines.append("")
+
+        # Transformations needed
+        transformations = [m for m in self.matched_params if m.transformation is not None]
+        if transformations:
+            lines.extend(
+                [
+                    f"Transformations Required: {len(transformations)}",
+                    f"{'Source':<40} {'Type':<12} {'Shapes'}",
+                    "-" * 80,
+                ]
+            )
+            for match in transformations:
+                trans = match.transformation
+                if trans:
+                    shapes_str = f"{trans.source_shape} -> {trans.target_shape}"
+                    lines.append(f"{match.source_name:<40} {trans.type:<12} {shapes_str}")
+            lines.append("")
+
+        # Unmatched parameters
+        if self.unmatched_params:
+            lines.extend(
+                [
+                    f"Unmatched Source Parameters: {len(self.unmatched_params)}",
+                    f"{'Parameter':<50} {'Reason'}",
+                    "-" * 80,
+                ]
+            )
+            for match in self.unmatched_params[:20]:  # Limit to first 20
+                lines.append(f"{match.source_name:<50} {match.unmatch_reason or 'unknown'}")
+            if len(self.unmatched_params) > 20:
+                lines.append(f"... and {len(self.unmatched_params) - 20} more")
+            lines.append("")
+
+        if self.unmatched_targets:
+            lines.extend(
+                [
+                    f"Unmatched Target Parameters: {len(self.unmatched_targets)}",
+                ]
+            )
+            for target in self.unmatched_targets[:20]:
+                lines.append(f"  {target}")
+            if len(self.unmatched_targets) > 20:
+                lines.append(f"... and {len(self.unmatched_targets) - 20} more")
+            lines.append("")
+
+        lines.append("=" * 80)
+        return "\n".join(lines)

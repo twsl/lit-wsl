@@ -6,7 +6,6 @@ LOG_LEVELS = (
     "debug",
     "info",
     "warning",
-    # "warn", # 'warn' is deprecated in favor of 'warning' which is called internally
     "error",
     "exception",
     "critical",
@@ -30,8 +29,6 @@ def get_rank_zero_logger(name=__name__) -> logging.Logger:
     """Initializes multi-GPU-friendly python command line logger."""
     logger = get_logger(name)
 
-    # this ensures all logging levels get marked with the rank zero decorator
-    # otherwise logs would get multiplied for each GPU process in multi-GPU setup
     for level in LOG_LEVELS:
         setattr(logger, level, rank_zero_only(getattr(logger, level)))
 

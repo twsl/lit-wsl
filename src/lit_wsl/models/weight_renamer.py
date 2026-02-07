@@ -63,19 +63,11 @@ class WeightRenamer:
 
     @property
     def state_dict(self) -> dict[str, Any]:
-        """Get the state dict from the loaded weights.
-
-        Returns:
-            The state dictionary containing model parameters
-        """
-        if isinstance(self.weights, dict):
-            # Handle different checkpoint formats
             if "state_dict" in self.weights:
                 return self.weights["state_dict"]
             elif "model" in self.weights:
                 return self.weights["model"]
             else:
-                # Assume the entire dict is the state dict
                 return self.weights
         else:
             raise TypeError("Unsupported weight file format.")
