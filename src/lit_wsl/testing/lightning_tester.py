@@ -113,6 +113,8 @@ class ModelTester(Generic[LightningModuleType, InputType]):
                 limit_test_batches=1,
                 num_sanity_val_steps=0,
                 max_epochs=1,
+                enable_checkpointing=False,
+                enable_progress_bar=False,
                 enable_model_summary=False,
             )
         return self._trainer
