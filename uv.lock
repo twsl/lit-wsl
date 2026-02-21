@@ -1222,7 +1222,6 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.10.0" },
     { name = "torch", specifier = ">=2.10.0" },
 ]
-provides-extras = ["extra"]
 
 [package.metadata.requires-dev]
 debug = [
