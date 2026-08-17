@@ -1204,7 +1204,7 @@ dev = [
     { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "jupytext", specifier = ">=1.19.5" },
     { name = "nbconvert", specifier = ">=7.17.1" },
-    { name = "prek", specifier = ">=0.4.12" },
+    { name = "prek", specifier = ">=0.4.13" },
     { name = "ruff", specifier = ">=0.16.3" },
     { name = "ty", specifier = ">=0.0.71" },
     { name = "vulture", specifier = ">=2.16" },
