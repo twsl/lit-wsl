@@ -149,7 +149,7 @@ new_model = NewModel()
 mapper = WeightMapper.from_checkpoint(
     "old_model.pth",
     new_model,
-    dummy_input=dummy_input  # Optional but improves matching
+    dummy_input=dummy_input,  # Optional but improves matching
 )
 
 mapping = mapper.suggest_mapping(threshold=0.6)
@@ -540,11 +540,7 @@ custom_pairs = [
     ({"attention"}, {"feedforward", "mlp"}),
 ]
 
-mapper = WeightMapper(
-    source_model,
-    target_model,
-    incompatible_pairs=custom_pairs
-)
+mapper = WeightMapper(source_model, target_model, incompatible_pairs=custom_pairs)
 ```
 
 **How it works:**
@@ -593,7 +589,7 @@ mapper = WeightMapper(yolo_v5, yolo_v8, incompatible_pairs=detection_pairs)
 # For models with custom naming or when you want maximum flexibility
 mapper = WeightMapper(
     old_model,
-    new_model
+    new_model,
     # incompatible_pairs not specified - no restrictions applied
 )
 ```
@@ -645,7 +641,7 @@ mapper.visualize_mapping(
     result=result,
     show_unmatched=True,
     max_matches=30,  # Show top 30 matches
-    max_unmatched=15  # Show up to 15 unmatched items
+    max_unmatched=15,  # Show up to 15 unmatched items
 )
 ```
 
@@ -885,9 +881,9 @@ class ModuleNode:
     """Represents a node in the hierarchical module structure."""
 
     def __init__(self, name: str, full_path: str, depth: int):
-        self.name = name                    # e.g., 'conv1'
-        self.full_path = full_path          # e.g., 'encoder.layer1.conv1'
-        self.depth = depth                  # 0 for root
+        self.name = name  # e.g., 'conv1'
+        self.full_path = full_path  # e.g., 'encoder.layer1.conv1'
+        self.depth = depth  # 0 for root
         self.children: dict[str, ModuleNode] = {}
         self.parent: ModuleNode | None = None
         self.parameter_group: ParameterGroup | None = None
@@ -909,7 +905,7 @@ def _build_hierarchy(self, groups: dict[str, ParameterGroup]) -> ModuleNode:
     root = ModuleNode("", "", 0)
 
     # Sort paths by depth to ensure parents are created before children
-    sorted_paths = sorted(groups.keys(), key=lambda x: (x.count('.'), x))
+    sorted_paths = sorted(groups.keys(), key=lambda x: (x.count("."), x))
 
     for module_path in sorted_paths:
         # Create intermediate nodes and attach parameter groups
@@ -960,10 +956,7 @@ Modules are now matched in **depth-first order** (shallow to deep):
 
 ```python
 # Sort by depth first, then by path
-sorted_source_paths = sorted(
-    self.source_groups.keys(),
-    key=lambda x: (x.count('.'), x)
-)
+sorted_source_paths = sorted(self.source_groups.keys(), key=lambda x: (x.count("."), x))
 ```
 
 **Why This Matters:**
@@ -981,9 +974,7 @@ Final scores combine base similarity with hierarchical context:
 base_score = self._compute_group_similarity(source_group, target_group, weights)
 
 # Hierarchical context bonus
-context_score = self._compute_hierarchy_context_score(
-    source_path, target_path, group_mapping
-)
+context_score = self._compute_hierarchy_context_score(source_path, target_path, group_mapping)
 
 # Combine: 80% base + 20% context
 final_score = 0.8 * base_score + 0.2 * context_score
@@ -1054,8 +1045,8 @@ Groups are indexed by their parameter types for fast lookup:
 
 ```python
 self.target_groups_by_types = {
-    frozenset({'weight', 'bias'}): ['conv1', 'conv2', 'fc'],
-    frozenset({'weight', 'bias'}): ['bn1', 'bn2'],
+    frozenset({"weight", "bias"}): ["conv1", "conv2", "fc"],
+    frozenset({"weight", "bias"}): ["bn1", "bn2"],
 }
 ```
 

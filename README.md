@@ -74,10 +74,7 @@ renamer = WeightRenamer("old_model.pth")
 renamer.remove_prefix("model.")
 
 # Rename specific keys
-renamer.rename_keys({
-    "backbone.conv1": "encoder.conv1",
-    "head.fc": "classifier.fc"
-})
+renamer.rename_keys({"backbone.conv1": "encoder.conv1", "head.fc": "classifier.fc"})
 
 # Save modified checkpoint
 renamer.save("renamed_model.pth")
