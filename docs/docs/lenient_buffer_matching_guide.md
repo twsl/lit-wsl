@@ -26,7 +26,7 @@ from lit_wsl.mapper import WeightMapper
 
 mapper = WeightMapper(
     source_module=source_model,
-    target_module=target_model
+    target_module=target_model,
     # buffer_matching_mode="exclude" is the default
 )
 
@@ -50,7 +50,7 @@ Completely ignores all buffers during matching for maximum performance:
 mapper = WeightMapper(
     source_module=source_model,
     target_module=target_model,
-    buffer_matching_mode="exclude"  # Default (can be omitted)
+    buffer_matching_mode="exclude",  # Default (can be omitted)
 )
 ```
 
@@ -66,11 +66,7 @@ mapper = WeightMapper(
 Statistical buffers get soft penalties instead of hard rejection:
 
 ```python
-mapper = WeightMapper(
-    source_module=source_model,
-    target_module=target_model,
-    buffer_matching_mode="lenient"
-)
+mapper = WeightMapper(source_module=source_model, target_module=target_model, buffer_matching_mode="lenient")
 ```
 
 **When to use**: When you want to consider buffer similarity but not strictly require matching. Allows matching despite buffer differences while preserving trainable parameter strictness. Useful when buffers might provide helpful hints but aren't critical.
@@ -80,11 +76,7 @@ mapper = WeightMapper(
 Original behavior - all parameters including buffers must match exactly:
 
 ```python
-mapper = WeightMapper(
-    source_module=source_model,
-    target_module=target_model,
-    buffer_matching_mode="strict"
-)
+mapper = WeightMapper(source_module=source_model, target_module=target_model, buffer_matching_mode="strict")
 ```
 
 **When to use**: When you need exact architecture matching, or when buffers are critical for your use case (e.g., transfer learning where batch statistics matter).
@@ -254,8 +246,8 @@ for src, (tgt, score) in mapping_with_scores.items():
 unmatched = result.get_unmatched()
 
 # Check if unmatched are mostly buffers or weights
-for param in unmatched['source'][:10]:
-    is_buffer = 'running' in param or 'num_batches' in param
+for param in unmatched["source"][:10]:
+    is_buffer = "running" in param or "num_batches" in param
     print(f"{'[BUFFER]' if is_buffer else '[WEIGHT]'} {param}")
 ```
 
@@ -263,11 +255,7 @@ for param in unmatched['source'][:10]:
 
 ```python
 # When exact matching is required
-mapper = WeightMapper(
-    source_module=src,
-    target_module=tgt,
-    buffer_matching_mode="strict"
-)
+mapper = WeightMapper(source_module=src, target_module=tgt, buffer_matching_mode="strict")
 ```
 
 ## Performance Impact
@@ -329,8 +317,8 @@ Buffer matching mode affects:
 unmatched = result.get_unmatched()
 
 # Count buffer vs weight mismatches
-buffer_count = sum(1 for p in unmatched['source'] if 'running' in p or 'num_batches' in p)
-weight_count = len(unmatched['source']) - buffer_count
+buffer_count = sum(1 for p in unmatched["source"] if "running" in p or "num_batches" in p)
+weight_count = len(unmatched["source"]) - buffer_count
 
 print(f"Unmatched: {weight_count} weights, {buffer_count} buffers")
 ```
@@ -355,11 +343,11 @@ Low scores on buffer matches are expected (get 0.2 shape score). Check:
 mapping_with_scores = result.get_mapping_with_scores()
 
 # Separate buffer matches from weight matches
-buffer_matches = {src: (tgt, score) for src, (tgt, score) in mapping_with_scores.items()
-                  if 'running' in src or 'num_batches' in src}
+buffer_matches = {
+    src: (tgt, score) for src, (tgt, score) in mapping_with_scores.items() if "running" in src or "num_batches" in src
+}
 
-weight_matches = {src: (tgt, score) for src, (tgt, score) in mapping_with_scores.items()
-                  if src not in buffer_matches}
+weight_matches = {src: (tgt, score) for src, (tgt, score) in mapping_with_scores.items() if src not in buffer_matches}
 
 avg_buffer_score = sum(s for _, s in buffer_matches.values()) / len(buffer_matches)
 avg_weight_score = sum(s for _, s in weight_matches.values()) / len(weight_matches)
