@@ -169,10 +169,12 @@ class NvidiaGPUStatsMonitor(pl.Callback):
         gpu_query = ",".join(queries)
         format = "csv,nounits,noheader"
         gpu_ids = ",".join(self._gpu_ids)
+        nvidia_smi = shutil.which("nvidia-smi")
+        if nvidia_smi is None:
+            raise RuntimeError("nvidia-smi is not available")
         result: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603 # nosec
             [
-                # it's ok to supress the warning here since we ensure nvidia-smi exists during init
-                shutil.which("nvidia-smi"),  # type: ignore  # noqa: PGH003
+                nvidia_smi,
                 f"--query-gpu={gpu_query}",
                 f"--format={format}",
                 f"--id={gpu_ids}",
