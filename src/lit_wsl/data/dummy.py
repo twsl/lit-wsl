@@ -50,7 +50,7 @@ class DummyDataset(Dataset):
     def __len__(self) -> int:
         return self.num_samples
 
-    def __getitem__(self, idx: int) -> tuple[Tensor, ...]:
+    def __getitem__(self, index: int) -> tuple[Tensor, ...]:
         sample = []
         for shape in self.shapes:
             if len(shape) > 0:

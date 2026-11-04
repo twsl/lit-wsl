@@ -1,12 +1,27 @@
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from lit_wsl.mapper.hierarchy_analyzer import HierarchyAnalyzer
 from lit_wsl.mapper.parameter_group import ParameterGroup
 from lit_wsl.mapper.parameter_info import ParameterInfo
-from lit_wsl.mapper.result_types import GroupMatchResult, ParameterMatchResult, ScoreBreakdown, TransformationInfo
+from lit_wsl.mapper.result_types import (
+    GroupMatchResult,
+    HierarchyMetadata,
+    ParameterMatchResult,
+    ScoreBreakdown,
+    TransformationInfo,
+)
 from lit_wsl.mapper.similarity_scorer import SimilarityScorer
 from lit_wsl.utils.logger import get_logger
+
+
+class PairMetadata(TypedDict):
+    target_metadata: HierarchyMetadata
+    combined_score: float
+    structure_score: float
+    base_score: float
+    common_types: set[str]
+    param_type_shapes: dict[str, tuple[tuple[int, ...], tuple[int, ...]]]
 
 
 class MappingStrategy:
@@ -274,7 +289,7 @@ class MappingStrategy:
         cost_matrix = np.ones((n_source, n_target)) * 1e6  # High cost for incompatible
 
         # Store metadata for each valid pairing
-        pair_metadata = {}
+        pair_metadata: dict[tuple[int, int], PairMetadata] = {}
 
         for source_idx, source_path in enumerate(source_paths):
             source_group = self.source_groups[source_path]

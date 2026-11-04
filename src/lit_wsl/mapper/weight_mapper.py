@@ -1,6 +1,6 @@
 from logging import Logger
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, cast
 
 import torch
 from torch import nn
@@ -177,7 +177,7 @@ class WeightMapper:
         except ValueError:
             actual_state_dict = params
 
-        state_dict = self.extractor.extract_from_state_dict(actual_state_dict)
+        state_dict = self.extractor.extract_from_state_dict(cast(dict[str, torch.Tensor], actual_state_dict))
         return state_dict
 
     @classmethod
@@ -268,6 +268,8 @@ class WeightMapper:
                 return None
 
             layer_name, first_layer = first_layer_info
+            if not isinstance(first_layer, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear, nn.Embedding)):
+                return None
             weight_shape = first_layer.weight.shape
 
             # Infer based on layer type
@@ -547,7 +549,7 @@ class WeightMapper:
         threshold: float | None = None,
         weights: dict[str, float] | None = None,
         validate_outputs: bool = True,
-        strategy: str = "greedy",
+        strategy: Literal["greedy", "optimal"] = "greedy",
     ) -> MappingResult:
         """Generate suggested parameter name mapping with full transparency.
 

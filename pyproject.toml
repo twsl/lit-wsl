@@ -255,6 +255,9 @@ skips = ['*_test.py', '*/test_*.py']
 [tool.ty.rules]
 invalid-mutable-override = "ignore"
 
+[tool.ty.src]
+exclude = ["notebooks/**"]
+
 [tool.ty.environment]
 python-version = "3.12"
 python-platform = "linux"

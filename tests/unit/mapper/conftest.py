@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from torch import Tensor, nn
 
@@ -103,13 +105,13 @@ class ComplexModel(nn.Module):
     def __init__(self, num_classes: int = 10) -> None:
         super().__init__()
         # Multi-stage backbone
-        self.backbone = nn.Module()
+        self.backbone: nn.Module = nn.Module()
         self.backbone.stage1 = ConvBlock(3, 64, num_layers=2)
         self.backbone.stage2 = ConvBlock(64, 128, num_layers=2)
         self.backbone.stage3 = ConvBlock(128, 256, num_layers=3)
 
         # Feature pyramid neck
-        self.neck = nn.Module()
+        self.neck: nn.Module = nn.Module()
         self.neck.fpn_layer1 = nn.Sequential(
             nn.Conv2d(256, 128, 1),
             nn.BatchNorm2d(128),
@@ -122,7 +124,7 @@ class ComplexModel(nn.Module):
         )
 
         # Classification head
-        self.head = nn.Module()
+        self.head: nn.Module = nn.Module()
         self.head.pool = nn.AdaptiveAvgPool2d(1)
         self.head.classifier = MLPBlock(64, 128, num_classes, num_layers=3)
 
@@ -148,7 +150,7 @@ class ComplexModelReimplemented(nn.Module):
     def __init__(self, num_classes: int = 10) -> None:
         super().__init__()
         # Feature pyramid with reorganized modules
-        self.feature_pyramid = nn.Module()
+        self.feature_pyramid: nn.Module = nn.Module()
 
         # Early features (combines original stage1 and stage2)
         self.feature_pyramid.early_features = nn.Module()
@@ -172,7 +174,7 @@ class ComplexModelReimplemented(nn.Module):
         )
 
         # Prediction head (reorganized head components)
-        self.prediction_head = nn.Module()
+        self.prediction_head: nn.Module = nn.Module()
         self.prediction_head.pool = nn.AdaptiveAvgPool2d(1)
         self.prediction_head.classifier = MLPBlock(64, 128, num_classes, num_layers=3)
 

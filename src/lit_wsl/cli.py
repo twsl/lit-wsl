@@ -92,7 +92,7 @@ def cmd_visualize_hierarchy(args: argparse.Namespace) -> int:
             model_class = load_model_class(args.model)
             target_model = model_class()
         else:
-            target_model = None
+            raise ValueError("--model is required when visualizing the target hierarchy")
 
         mapper = WeightMapper.from_state_dict(
             source_state_dict=state_dict,
