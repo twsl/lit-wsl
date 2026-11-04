@@ -252,6 +252,9 @@ quote-style = "double"
 [tool.bandit.assert_used]
 skips = ['*_test.py', '*/test_*.py']
 
+[tool.ty.rules]
+invalid-mutable-override = "ignore"
+
 [tool.ty.environment]
 python-version = "3.12"
 python-platform = "linux"
