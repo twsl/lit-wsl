@@ -100,7 +100,7 @@ def load_checkpoint_as_dict(checkpoint_path: str | Path) -> dict[str, Any]:
     original_unpickler = pickle.Unpickler
 
     try:
-        setattr(pickle, "Unpickler", DynamicUnpickler)
+        pickle.Unpickler = DynamicUnpickler
         loaded_object = torch.load(checkpoint_path, map_location="cpu", weights_only=False)  # nosec B614
     finally:
         pickle.Unpickler = original_unpickler
@@ -236,7 +236,7 @@ def extract_state_dict(checkpoint: dict | Any) -> dict[str, Tensor]:
 
     # Try to call state_dict() if available
     if hasattr(checkpoint, "state_dict"):
-        state_dict_method = getattr(checkpoint, "state_dict")
+        state_dict_method = checkpoint.state_dict
         if callable(state_dict_method):
             try:
                 return state_dict_method()
